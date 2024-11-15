@@ -71,7 +71,7 @@ void tsk_main(void *param)
       spannung_a[cnt_a] = adc_channel_sample(ADC_CHANNEL_7); // 1V=0,05V am ADC 3,3v=66v
       spannung += spannung_a[cnt_a];
       strom -= strom_a[cnt_a];
-      strom_a[cnt_a] = adc_channel_sample(ADC_CHANNEL_1); // 1A=0,14V am ADC 3,3v=23,6a
+      strom_a[cnt_a] = adc_channel_sample(ADC_CHANNEL_1)-130; // 1A=0,14V am ADC 3,3v=23,6a
       strom += strom_a[cnt_a];
       cnt_a++;
       gu=spannung;
@@ -90,7 +90,7 @@ void tsk_main(void *param)
     else
     {
       flag100ms = false;
-      temperatur = adc_channel_sample(ADC_CHANNEL_0);                        // Temperatur im Gehäuse messen
+      temperatur = adc_channel_sample(ADC_CHANNEL_8);                        // Temperatur im Gehäuse messen
       maximalstrom = maximalstrom_abs * (6 - abregelwert); // aktuellen Maximalstrom aus maximalem Wechselrichterstrom und dem Abregelwert berechnen
       switch (Schritt)
       {
@@ -159,12 +159,12 @@ void tsk_main(void *param)
         // ansonsten Wandlerstrom kontinuirlich so einstellen dass die Zellen mit der in Schritt 2 gefundenen MPP Spannung laufen
         else
         {
-          if ((spannung < spannung_MPP) || (strom > maximalstrom) || (temperatur > 355))
+          if ((spannung < spannung_MPP) || (strom > maximalstrom) || (temperatur < 500))
           { // 72°C
             if (U_out > 0)
               U_out--; // Ausgangsstrom reduzieren
           }
-          if ((spannung > spannung_MPP) && (strom < maximalstrom) && (temperatur < 350))
+          if ((spannung > spannung_MPP) && (strom < maximalstrom) && (temperatur > 600))
           { // 68°C
             if (U_out < 255)
               U_out++; // Augangsstrom erhöhen
@@ -234,7 +234,7 @@ void zcd_int()
 }
 void t13ov()
 {
-  TIMER_CH0CV(TIMER15) = (sinus2[(uint8_t)Synccounter & 0b01111111] * (uint32_t)U_out) >> 10; // 8
+  TIMER_CH0CV(TIMER15) = (sinus2[(uint8_t)Synccounter & 0b01111111] * (uint32_t)U_out) >> 8; // 8
   if (cnt100ms < 1282)
   {
     cnt100ms++;
@@ -268,19 +268,23 @@ void setup()
   mytim.attachInterrupt(t13ov, 0);
   mytim.start();
   Serial.begin(9600);
-  pinMode(PB13, OUTPUT);
-  pinMode(PB12, OUTPUT);
-  pinMode(PC13, OUTPUT);
-  pinMode(PA12, OUTPUT);
-  pinMode(PB11, OUTPUT);
+  pinMode(PB13, OUTPUT);//LED-rot
+  pinMode(PB12, OUTPUT);//LED-blau
+  pinMode(PC13, OUTPUT);//Relais-Netz
+  pinMode(PA12, OUTPUT);//Enable PWM-Regler
+  pinMode(PB11, OUTPUT);//Relais 115V/230V
   digitalWrite(PB11, 1);
   digitalWrite(PA12, 1);
   digitalWrite(PB12, 0);
   digitalWrite(PB13, 1);
   digitalWrite(PC13, 0);
-  pinMode(PA7,INPUT_ANALOG);
-  pinMode(PA1,INPUT_ANALOG);
-  pinMode(PA6, INPUT);
+  pinMode(PA7,INPUT_ANALOG);//PV-Spannung
+  pinMode(PA1,INPUT_ANALOG);//PV-Strom
+  pinMode(PB0,INPUT_ANALOG);//Temperatursensor
+  pinMode(PA0,INPUT_ANALOG);//Spannung Netz (glatt)
+  pinMode(PA4,INPUT_ANALOG);//Spannung Netz (puls)
+  pinMode(PA6, INPUT);//Zerocross
+
   adc_config();
   xTaskCreate(tsk_main, "task1", 200, NULL, 0, &hdl1);
   xTaskCreate(tsk_com, "task2", 100, NULL, 1, &hdl2);
