@@ -12,3 +12,5 @@ Firmware can be flashed with openocd. A binary can be found in .pio/build folder
 
   Pinout of prog connector: (vcc) (dio) (clk) (rst) [gnd]
   (vcc is next to the controller)
+
+If RDP fuse has to be unlocked run --> openocd -f interface/stlink-v2.cfg -f target/stm32f1x.cfg -c "init" -c"reset halt" -c"stm32f1x unlock 0" -c"reset halt" -c"exit"
