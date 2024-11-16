@@ -2,7 +2,7 @@ This is a development of a custom Firmware for the WVC700R3 solar micro inverter
 
 ATTENTION: The device works with high voltage and is directly connected to the grid. Use this stuff only when you know what you do. I am not responsible for any damage or injury!
 
-Firmware can be flashed with openocd. A binary can be found in .pio/build folder.
+Firmware can be flashed with openocd. A binary can be found in .pio/build folder. A St-Link/V2 flash adapter is needed (can be found on Amazon).
 - Download openocd
 - extract archive to disk
 - copy firmware.elf into openocd.exe directory
