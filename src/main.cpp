@@ -237,9 +237,10 @@ void tsk_com(void *param)
     Serial.print(",Power_adjustment,100,Energy,");
     Serial.println(TIMER_CAR(TIMER13) / 112.5);
     Serial.println();
-    Serial.println("AT+SENDICA=property,,PowerSwitch,1,Plant,0.01,Emission,0.01,Time,30,P_adj,100,TEMP_SET,64");
+    vTaskDelay(500);
+    Serial.println("AT+SENDICA=property,,PowerSwitch,1,Plant,0.1,Emission,0.1,Time,30,P_adj,100,TEMP_SET,64");
     Serial.println();
-    vTaskDelay(5500);
+    vTaskDelay(5000);
   }
 }
 
