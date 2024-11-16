@@ -2,3 +2,7 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+.pio/build/genericGD32F130C8/FrameworkArduino
+.pio/build/genericGD32F130C8/FrameworkArduinoVariant
+.pio/build/genericGD32F130C8/libb0b/FreeRTOS
+.pio/build/genericGD32F130C8/src
