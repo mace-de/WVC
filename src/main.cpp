@@ -31,7 +31,7 @@ const uint32_t minimalspannung_abs = 1576 * Mittel_aus;      //= etwa 26V darunt
                                                              // an den Scheitelpunkten nicht ins Netz einspeisen
 const uint32_t maximalstrom_abs = (2200 * Mittel_aus) / 225; //= etwa 15A darüber wird der WR wohl verglühen
 
-volatile uint32_t Synccounter = 0, abregelwert = 0, cnt100ms = 0, gu, gi, gun;
+volatile uint32_t Synccounter = 0, abregelwert = 0, cnt100ms = 0, gu, gi, gun, gt;
 volatile uint8_t U_out = 0, counter = 0;
 volatile bool flag100ms = 0, Sync = 0;
 
@@ -69,14 +69,14 @@ void tsk_main(void *param)
       strom_a[cnt_a] = adc_channel_sample(ADC_CHANNEL_1) - 130; // 2375 (148) = 1A
       strom += strom_a[cnt_a];
       cnt_a++;
-      netzspannung = adc_channel_sample(ADC_CHANNEL_0); // 4,186 / 1V
-      if ((netzspannung > 1060) || (netzspannung < 880)) // wenn Netzspannung unter 210V oder über 253V dann Wechselrichter aus 
+      netzspannung = adc_channel_sample(ADC_CHANNEL_0);  // 4,186 / 1V
+      if ((netzspannung > 1060) || (netzspannung < 880)) // wenn Netzspannung unter 210V oder über 253V dann Wechselrichter aus
       {
         Sync = 0;
         gpio_bit_reset(GPIOC, GPIO_PIN_13); // Netzrelais aus
         gpio_bit_set(GPIOA, GPIO_PIN_12);   // Regler aus
       }
-      gun= netzspannung;
+      gun = netzspannung;
       gu = spannung;
       gi = strom;
       if (Schritt == 2)
@@ -94,6 +94,7 @@ void tsk_main(void *param)
     {
       flag100ms = false;
       temperatur = adc_channel_sample(ADC_CHANNEL_8);        // Temperatur im Gehäuse messen
+      gt=temperatur;
       maximalstrom = maximalstrom_abs * (225 - abregelwert); // aktuellen Maximalstrom aus maximalem Wechselrichterstrom und dem Abregelwert berechnen
       switch (Schritt)
       {
@@ -218,18 +219,27 @@ void tsk_com(void *param)
 {
   while (1)
   {
-    Serial.print("Netzfrequenz: ");
+    float temperatur=((double)(gt/-658.6337)*(gt/-658.6337)*(gt/-658.6337))+((gt*gt)/41895.521)-(gt*0.0728544965)+103.9;
+    Serial.print("AT+SENDICA=property,PV_Volt,");
+    Serial.print(gu / 970.0, 1);
+    Serial.print(",PV_Current,");
+    Serial.print(gi / 2375.0, 1);
+    Serial.print(",PV_Power,");
+    Serial.print((gi * gu) / (2375.0 * 970.0), 1);
+    Serial.print(",AC_Volt,");
+    Serial.print(gun / 4.186, 1);
+    Serial.print(",AC_Current,");
+    Serial.print(((gu * gi) / 2678779.07) / (gun / 4.186));
+    Serial.print(",Out_Power,");
+    Serial.print((gu * gi) / 2678779.07, 1);
+    Serial.print(",Temperature,");
+    Serial.print(temperatur,1);
+    Serial.print(",Power_adjustment,100,Energy,");
     Serial.println(TIMER_CAR(TIMER13) / 112.5);
-    Serial.print("Netzspannung: ");
-    Serial.println(gun / 4.186);
-    Serial.print("PV-Spannung: ");
-    Serial.println(gu / 970.0);
-    Serial.print("PV-Strom: ");
-    Serial.println(gi / 2375.0);
-    Serial.print("Einspeiseleistung: ");
-    Serial.println((gu * gi) / 2678779.07);
     Serial.println();
-    vTaskDelay(1000);
+    Serial.println("AT+SENDICA=property,,PowerSwitch,1,Plant,0.01,Emission,0.01,Time,30,P_adj,100,TEMP_SET,64");
+    Serial.println();
+    vTaskDelay(5500);
   }
 }
 
@@ -284,7 +294,7 @@ HardwareTimer mytim(TIMER13);
 void setup()
 {
 
-  Serial.begin(9600);
+  Serial.begin(115200);
 
   // I/O-Pins einstellen
   pinMode(PB13, OUTPUT);      // LED-rot
