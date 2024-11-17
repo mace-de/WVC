@@ -4,42 +4,22 @@
 #include <queue.h>
 #include "GD32FreeRTOSConfig.h"
 #include <HardwareTimer.h>
-
-// put function declarations here:
+#include "myadc.h"
+#include "lut.h"
 
 #define Mittel_aus 16 // gleitendens Mittel aus X Werten (Maximal 63 sonst Überlauf)
 
-// LUT mit modifiziertem Sinus mit größeren Pausen in den Nulldurchgängen und etwas phasenverschoben
-const uint8_t sinus2[] = {0, 0, 0, 0, 5, 12, 19, 26, 33, 40, 47, 55, 62, 69, 75, 82, 89, 95, 102, 108, 114, 121, 127, 133,
-                          139, 145, 151, 155, 161, 166, 172, 177, 181, 186, 191, 196, 199, 204, 208, 212, 216, 219, 223,
-                          227, 229, 232, 235, 237, 240, 242, 244, 246, 248, 249, 250, 251, 253, 254, 254, 255, 255, 255,
-                          255, 255, 254, 254, 253, 251, 250, 249, 248, 246, 244, 242, 240, 237, 235, 232, 229, 227, 223,
-                          219, 216, 212, 208, 204, 199, 196, 191, 186, 181, 177, 172, 166, 161, 155, 151, 145, 139, 133,
-                          127, 121, 114, 108, 102, 95, 89, 82, 75, 69, 62, 55, 47, 40, 33, 26, 19, 12, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                          0, 0, 0};
-// LUT mit standard Sinus
-const uint8_t sinus1[] = {0, 6, 13, 19, 25, 31, 37, 44, 50, 56, 62, 68, 74, 80, 86, 92, 98, 103, 109, 115, 120, 126, 131, 136,
-                          142, 147, 152, 157, 162, 167, 171, 176, 180, 185, 189, 193, 197, 201, 205, 208, 212, 215, 219,
-                          222, 225, 228, 231, 233, 236, 238, 240, 242, 244, 246, 247, 249, 250, 251, 252, 253, 254, 254,
-                          255, 255, 255, 255, 255, 254, 254, 253, 252, 251, 250, 249, 247, 246, 244, 242, 240, 238, 236,
-                          233, 231, 228, 225, 222, 219, 215, 212, 208, 205, 201, 197, 193, 189, 185, 180, 176, 171, 167,
-                          162, 157, 152, 147, 142, 136, 131, 126, 120, 115, 109, 103, 98, 92, 86, 80, 74, 68, 62, 56, 50,
-                          44, 37, 31, 25, 19, 13, 6,
-                          0, 0, 0};
+const uint32_t minimalspannung_abs = 1576 * Mittel_aus; //= etwa 26V darunter kann der Wandler wegen zu geringer Ausgangsspannung
+                                                        // an den Scheitelpunkten nicht ins Netz einspeisen (61) = 1V
+const uint32_t maximalstrom_abs = 2200 * Mittel_aus;    //= etwa 15A darüber wird der WR wohl verglühen (148) = 1A
 
-const uint32_t minimalspannung_abs = 1576 * Mittel_aus;      //= etwa 26V darunter kann der Wandler wegen zu geringer Ausgangsspannung
-                                                             // an den Scheitelpunkten nicht ins Netz einspeisen
-const uint32_t maximalstrom_abs = (2200 * Mittel_aus) / 225; //= etwa 15A darüber wird der WR wohl verglühen
+volatile uint32_t Synccounter = 0, abregelwert = 0, cnt100ms = 0, gu = 0, gi = 0, gun = 0, gt = 0;
+volatile uint8_t U_out = 0, counter = 0, leistungsanforderung = 100;
+volatile bool flag100ms = 0, Sync = 0, mainswitch = 1;
+volatile float energie_tag = 0;
 
-volatile uint32_t Synccounter = 0, abregelwert = 0, cnt100ms = 0, gu, gi, gun, gt;
-volatile uint8_t U_out = 0, counter = 0;
-volatile bool flag100ms = 0, Sync = 0;
-
-TaskHandle_t hdl1, hdl2;
+TaskHandle_t hdl1, hdl2, hdl3;
 HardwareSerial Serial(PB7, PB6, 0);
-
-void adc_config(void);
-uint16_t adc_channel_sample(uint8_t channel);
 
 void tsk_main(void *param)
 {
@@ -48,14 +28,16 @@ void tsk_main(void *param)
     static uint8_t Schritt = 1, cnt_a = 0;
     static bool teilbereichsuche = false;
     static uint32_t spannung_MPP = 0, Langzeitzaehler = 0, minimalspannung = 0, maximalspannung = 0, maximalstrom = 0, startverz = 0;
-    static uint32_t leistung_MPP = 0;
+    static uint32_t leistung_MPP = 0, maximalstrom_la = 0;
     static uint32_t spannung = 0, strom = 0, spannung_a[Mittel_aus], strom_a[Mittel_aus], temperatur = 0;
     uint32_t leistung, netzspannung;
     // sobald die Netzsyncronität verloren geht Wandler Stom abschalten und in den Warteschritt gehen
-    if (!Sync)
+    if (!Sync || !mainswitch)
     {
       Schritt = 1;
       U_out = 0;
+      gpio_bit_reset(GPIOC, GPIO_PIN_13); // Netzrelais aus
+      gpio_bit_set(GPIOA, GPIO_PIN_12);   // Regler aus
     }
     // wenn nix los dann messen und gleitendes Mittel aus "Mittel_aus" Werten bilden, aktuelle Leistung ausrechnen und im Suchmodus die Maximalwerte speichern
     if (flag100ms == false)
@@ -66,7 +48,8 @@ void tsk_main(void *param)
       spannung_a[cnt_a] = adc_channel_sample(ADC_CHANNEL_7); // 970 (61) = 1V
       spannung += spannung_a[cnt_a];
       strom -= strom_a[cnt_a];
-      strom_a[cnt_a] = adc_channel_sample(ADC_CHANNEL_1) - 130; // 2375 (148) = 1A
+      int32_t t_strom = adc_channel_sample(ADC_CHANNEL_1) - 130; // 2375 (148) = 1A
+      strom_a[cnt_a] = t_strom < 0 ? 0 : t_strom;
       strom += strom_a[cnt_a];
       cnt_a++;
       netzspannung = adc_channel_sample(ADC_CHANNEL_0);  // 4,186 / 1V
@@ -93,15 +76,18 @@ void tsk_main(void *param)
     else
     {
       flag100ms = false;
-      temperatur = adc_channel_sample(ADC_CHANNEL_8);        // Temperatur im Gehäuse messen
-      gt=temperatur;
-      maximalstrom = maximalstrom_abs * (225 - abregelwert); // aktuellen Maximalstrom aus maximalem Wechselrichterstrom und dem Abregelwert berechnen
+      temperatur = adc_channel_sample(ADC_CHANNEL_8); // Temperatur im Gehäuse messen
+      gt = temperatur;
+      maximalstrom = (maximalstrom_abs * (225 - abregelwert)) / 225; // aktuellen Maximalstrom aus maximalem Wechselrichterstrom und dem Abregelwert berechnen
+      maximalstrom_la = (maximalstrom_abs * leistungsanforderung) / 100;
+      if (maximalstrom > maximalstrom_la)
+        maximalstrom = maximalstrom_la;
       switch (Schritt)
       {
       case 1: // Warteschritt
         // auf Netzsyncronität warten
         {
-          if (Sync)
+          if (Sync && mainswitch)
           {
             if (startverz < 300)
             { // wenn startklar noch 30 Sekunden warten
@@ -212,35 +198,138 @@ void tsk_main(void *param)
       }
       }
     }
+    vTaskDelay(1);
   }
 }
 
-void tsk_com(void *param)
+void tsk_com_send(void *param)
 {
   while (1)
   {
-    float temperatur=((double)(gt/-658.6337)*(gt/-658.6337)*(gt/-658.6337))+((gt*gt)/41895.521)-(gt*0.0728544965)+103.9;
+    float temperatur = ((double)(gt / -658.6337) * (gt / -658.6337) * (gt / -658.6337)) + ((gt * gt) / 41895.521) - (gt * 0.0728544965) + 103.9;
+    float leistung = (gu * gi) / 2678779.07;
+    energie_tag += leistung;
     Serial.print("AT+SENDICA=property,PV_Volt,");
-    Serial.print(gu / 970.0, 1);
+    Serial.print(gu / 970.0, 1); // ausgabe Solarspannung in V
     Serial.print(",PV_Current,");
-    Serial.print(gi / 2375.0, 1);
+    Serial.print(gi / 2375.0, 1); // Ausgabe Solarstrom in A
     Serial.print(",PV_Power,");
-    Serial.print((gi * gu) / (2375.0 * 970.0), 1);
+    Serial.print((gi * gu) / (2375.0 * 970.0), 1); // Ausgabe Solarleistung in W
     Serial.print(",AC_Volt,");
-    Serial.print(gun / 4.186, 1);
+    Serial.print(gun / 4.186, 1); // Ausgabe Netzspannung
     Serial.print(",AC_Current,");
-    Serial.print(((gu * gi) / 2678779.07) / (gun / 4.186));
+    Serial.print(((gu * gi) / 2678779.07) / (gun / 4.186)); // Ausgabe berechneter Ausgangsstrom in A Wirkungsgrad ~86%
     Serial.print(",Out_Power,");
-    Serial.print((gu * gi) / 2678779.07, 1);
+    Serial.print(leistung, 1); // Ausgabe berechnete Ausgangsleistung
     Serial.print(",Temperature,");
-    Serial.print(temperatur,1);
-    Serial.print(",Power_adjustment,100,Energy,");
-    Serial.println(TIMER_CAR(TIMER13) / 112.5);
+    Serial.print(temperatur, 1); // Ausgabe gemessene Temperatur auf Platine
+    Serial.print(",Power_adjustment,");
+    Serial.print(leistungsanforderung); // Ausgabe aktuelle Leistungsanforderung
+    Serial.print(",Energy,");
+    Serial.println(TIMER_CAR(TIMER13) / 112.5); // Ausgabe gemessene Netzfrequenz
     Serial.println();
     vTaskDelay(500);
-    Serial.println("AT+SENDICA=property,,PowerSwitch,1,Plant,0.1,Emission,0.1,Time,30,P_adj,100,TEMP_SET,64");
+    Serial.print("AT+SENDICA=property,PowerSwitch,");
+    Serial.print(mainswitch); // Ausgabe aktueller Ein/Aus Status
+    Serial.print(",Day_Energy,");
+    Serial.print(energie_tag / 654545.4, 2); // Ausgabe berechnete Energie seit einschalten
+    Serial.print(",Plant,0.0,Emission,0.0,Time,30,P_adj,");
+    Serial.print(leistungsanforderung); // Ausgabe aktuelle Leistungsanforderung
+    Serial.println(",TEMP_SET,64");
     Serial.println();
     vTaskDelay(5000);
+  }
+}
+
+void tsk_com_rcv(void *param)
+{
+  static uint8_t step = 0;
+  char ch[6];
+  while (1)
+  {
+    if (Serial.available()) // sind Daten im Puffer?
+    {
+      switch (step)
+      {
+      case 0:
+      {
+        if (Serial.read() == '+') // Startzeichen suchen
+        {
+          step = 1;
+          vTaskDelay(1); // kurz warten damit der String auch komplett im Puffer ist
+        }
+        break;
+      }
+      case 1:
+      {
+        if (Serial.read() == 'I') // ILOPDATA?
+          step = 2;               // dann zur Auswertung
+        else
+          step = 0; // sonst wieder zur Startzeichen Suche
+        break;
+      }
+      case 2:
+      {
+        ch[0] = Serial.read();
+        if (ch[0] == ',') // erstes Komma finden
+        {
+          ch[0] = Serial.read();
+          ch[1] = Serial.read();
+          if (ch[0] == 'E' && ch[1] == 'n') //+ILOPDATA=ICA,Energy_Cleared,0<\r><\n>
+            step = 3;
+          if (ch[0] == 'P')
+          {
+            for (int i = 2; i < 6; i++)
+            {
+              ch[i] = Serial.read();
+            }
+            if (ch[5] == 'S') //+ILOPDATA=ICA,PowerSwitch,0<\r><\n>
+              step = 4;
+            if (ch[5] == '_') //+ILOPDATA=ICA,Power_adjust,100<\r><\n>
+              step = 8;
+          }
+          if (ch[0] == 'T' && ch[1] == 'i') //+ILOPDATA=ICA,Time,40<\r><\n>
+            step = 5;
+          if (ch[0] == 'C' && ch[1] == 'h') //+ILOPDATA=ICA,Channel,1<\r><\n>
+            step = 6;
+          if (ch[0] == 'M' && ch[1] == '0') //+ILOPDATA=ICA,Model,4<\r><\n>
+            step = 7;
+        }
+        break;
+      }
+      case 4: // Powerswitch
+      {
+        if (Serial.read() == ',')
+        {
+          ch[0] = Serial.read();
+          if (ch[0] == '0')
+            mainswitch = 0;
+          if (ch[0] == '1')
+            mainswitch = 1;
+          step = 0;
+        }
+        break;
+      }
+      case 8: // Leistungsbegrenzung
+      {
+        if (Serial.read() == ',')
+        {
+          leistungsanforderung = Serial.parseInt();
+          step = 0;
+        }
+        break;
+      }
+      default:
+      {
+        step = 0;
+        break;
+      }
+      }
+    }
+    else
+    {
+      vTaskDelay(100); // wenn keine Daten im Puffer 100ms warten
+    }
   }
 }
 
@@ -332,51 +421,13 @@ void setup()
   //---------------------------------------------------------------------------
 
   // Tasks und Interrupt erzeugen
-  xTaskCreate(tsk_main, "task1", 200, NULL, 0, &hdl1); // Haupttask
-  xTaskCreate(tsk_com, "task2", 100, NULL, 1, &hdl2);  // Kommunikationstask
-  attachInterrupt(PA6, zcd_int, RISING);               // Zerocross Interrupt
-  vTaskStartScheduler();                               // Tasks starten
+  xTaskCreate(tsk_main, "task1", 200, NULL, 1, &hdl1);     // Haupttask
+  xTaskCreate(tsk_com_send, "task2", 100, NULL, 0, &hdl2); // Kommunikationstask zum senden
+  xTaskCreate(tsk_com_rcv, "task3", 100, NULL, 0, &hdl3);  // Kommunikationstask zum empfangen
+  attachInterrupt(PA6, zcd_int, RISING);                   // Zerocross Interrupt
+  vTaskStartScheduler();                                   // Tasks starten
 }
 
 void loop()
 {
-}
-void adc_config(void)
-{
-  rcu_periph_clock_enable(RCU_ADC);
-  rcu_adc_clock_config(RCU_ADCCK_APB2_DIV4);
-  /* ADC data alignment config */
-  adc_data_alignment_config(ADC_DATAALIGN_RIGHT);
-  /* ADC channel length config */
-  adc_channel_length_config(ADC_REGULAR_CHANNEL, 1U);
-  /* ADC trigger config */
-  adc_external_trigger_source_config(ADC_REGULAR_CHANNEL, ADC_EXTTRIG_REGULAR_NONE);
-  /* ADC external trigger config */
-  adc_external_trigger_config(ADC_REGULAR_CHANNEL, ENABLE);
-  /* enable ADC interface */
-  adc_enable();
-  delay(1U);
-  /* ADC calibration and reset calibration */
-  adc_calibration_enable();
-}
-
-/*!
-    \brief      ADC channel sample
-    \param[in]  none
-    \param[out] none
-    \retval     none
-*/
-uint16_t adc_channel_sample(uint8_t channel)
-{
-  /* ADC regular channel config */
-  adc_regular_channel_config(0U, channel, ADC_SAMPLETIME_7POINT5);
-  /* ADC software trigger enable */
-  adc_software_trigger_enable(ADC_REGULAR_CHANNEL);
-  /* wait the end of conversion flag */
-  while (!adc_flag_get(ADC_FLAG_EOC))
-    ;
-  /* clear the end of conversion flag */
-  adc_flag_clear(ADC_FLAG_EOC);
-  /* return regular channel sample value */
-  return (adc_regular_data_read());
 }
