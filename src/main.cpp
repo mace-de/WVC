@@ -385,7 +385,7 @@ void setup()
 {
 
   Serial.begin(115200);
-
+  Serial.println("AT+E");     // WLAN-Modul Echo aus
   // I/O-Pins einstellen
   pinMode(PB13, OUTPUT);      // LED-rot
   pinMode(PB12, OUTPUT);      // LED-blau
@@ -430,4 +430,5 @@ void setup()
 
 void loop()
 {
+  
 }
