@@ -2,8 +2,10 @@
 #include <FreeRTOS.h>
 #include <task.h>
 #include <queue.h>
+#include <semphr.h>
 #include "GD32FreeRTOSConfig.h"
 #include <HardwareTimer.h>
+#include "FlashStorage_mod.h"
 #include "myadc.h"
 #include "lut.h"
 
@@ -13,13 +15,19 @@ const uint32_t minimalspannung_abs = 1576 * Mittel_aus; //= etwa 26V darunter ka
                                                         // an den Scheitelpunkten nicht ins Netz einspeisen (61) = 1V
 const uint32_t maximalstrom_abs = 2200 * Mittel_aus;    //= etwa 15A darüber wird der WR wohl verglühen (148) = 1A
 
-volatile uint32_t Synccounter = 0, abregelwert = 0, cnt100ms = 0, gu = 0, gi = 0, gun = 0, gt = 0;
-volatile uint8_t U_out = 0, counter = 0, leistungsanforderung = 100;
-volatile bool flag100ms = 0, Sync = 0, mainswitch = 1;
+volatile uint32_t U_out = 0, Synccounter = 0, abregelwert = 0, cnt100ms = 0, gu = 0, gi = 0, gun = 0, gt = 0;
+volatile uint8_t  counter = 0;
+volatile bool flag100ms = 0, Sync = 0;
 volatile float energie_tag = 0;
-
-TaskHandle_t hdl1, hdl2, hdl3;
+volatile struct s_flashdata
+{
+  float energie_gesamt;
+  uint8_t mainswitch, leistungsanforderung;
+} flashdata;
+TaskHandle_t hdl1, hdl2, hdl3, hdl4;
 HardwareSerial Serial(PB7, PB6, 0);
+FlashStorage<sizeof(flashdata)> myflash;
+xSemaphoreHandle sem1;
 
 void tsk_main(void *param)
 {
@@ -32,7 +40,7 @@ void tsk_main(void *param)
     static uint32_t spannung = 0, strom = 0, spannung_a[Mittel_aus], strom_a[Mittel_aus], temperatur = 0;
     uint32_t leistung, netzspannung;
     // sobald die Netzsyncronität verloren geht Wandler Stom abschalten und in den Warteschritt gehen
-    if (!Sync || !mainswitch)
+    if (!Sync || !flashdata.mainswitch)
     {
       Schritt = 1;
       U_out = 0;
@@ -79,7 +87,7 @@ void tsk_main(void *param)
       temperatur = adc_channel_sample(ADC_CHANNEL_8); // Temperatur im Gehäuse messen
       gt = temperatur;
       maximalstrom = (maximalstrom_abs * (225 - abregelwert)) / 225; // aktuellen Maximalstrom aus maximalem Wechselrichterstrom und dem Abregelwert berechnen
-      maximalstrom_la = (maximalstrom_abs * leistungsanforderung) / 100;
+      maximalstrom_la = (maximalstrom_abs * flashdata.leistungsanforderung) / 100;
       if (maximalstrom > maximalstrom_la)
         maximalstrom = maximalstrom_la;
       switch (Schritt)
@@ -87,7 +95,7 @@ void tsk_main(void *param)
       case 1: // Warteschritt
         // auf Netzsyncronität warten
         {
-          if (Sync && mainswitch)
+          if (Sync && flashdata.mainswitch)
           {
             if (startverz < 300)
             { // wenn startklar noch 30 Sekunden warten
@@ -134,7 +142,7 @@ void tsk_main(void *param)
 
           if ((spannung > minimalspannung) && (strom < maximalstrom))
           {
-            if (U_out < 255)
+            if (U_out < 1023)
             {
               U_out++;
             }
@@ -156,7 +164,7 @@ void tsk_main(void *param)
         gpio_bit_set(GPIOB, GPIO_PIN_12);   // blau leuchtet
         gpio_bit_reset(GPIOB, GPIO_PIN_13); // rot aus
         // bei plötzlicher Verschattung leistung schnell reduzieren (Spannung fällt unter 24V)
-        if (spannung < (minimalspannung_abs - 38 * Mittel_aus))
+        if (spannung < (minimalspannung_abs - 40 * Mittel_aus))
         {
           U_out = U_out >> 1;
         }
@@ -171,7 +179,7 @@ void tsk_main(void *param)
           }
           if ((spannung > spannung_MPP) && (strom < maximalstrom) && (temperatur > 600))
           { // 68°C
-            if (U_out < 255)
+            if (U_out < 1023)
               U_out++; // Augangsstrom erhöhen
           }
         }
@@ -186,9 +194,10 @@ void tsk_main(void *param)
           Schritt = 2;
         }
         // alle 30min gucken ob sich durch verschattung ein neues globales maximum gebildet hat
-        // Wandlerstom dazu auf 1/8 absenken und Suche starten
+        // Wandlerstom dazu auf 1/8 absenken, Suche starten und die permanenten Daten in den Flash schreiben
         if (Langzeitzaehler == 18000)
         {
+          xSemaphoreGive(sem1);
           leistung_MPP = 0;
           Langzeitzaehler = 0;
           U_out = U_out >> 3;
@@ -204,11 +213,13 @@ void tsk_main(void *param)
 
 void tsk_com_send(void *param)
 {
+  static uint32_t lastwaketime;
   while (1)
   {
     float temperatur = ((double)(gt / -658.6337) * (gt / -658.6337) * (gt / -658.6337)) + ((gt * gt) / 41895.521) - (gt * 0.0728544965) + 103.9;
     float leistung = (gu * gi) / 2678779.07;
     energie_tag += leistung;
+    flashdata.energie_gesamt += leistung;
     Serial.print("AT+SENDICA=property,PV_Volt,");
     Serial.print(gu / 970.0, 1); // ausgabe Solarspannung in V
     Serial.print(",PV_Current,");
@@ -224,20 +235,25 @@ void tsk_com_send(void *param)
     Serial.print(",Temperature,");
     Serial.print(temperatur, 1); // Ausgabe gemessene Temperatur auf Platine
     Serial.print(",Power_adjustment,");
-    Serial.print(leistungsanforderung); // Ausgabe aktuelle Leistungsanforderung
+    Serial.print(flashdata.leistungsanforderung); // Ausgabe aktuelle Leistungsanforderung
     Serial.print(",Energy,");
     Serial.println(TIMER_CAR(TIMER13) / 112.5); // Ausgabe gemessene Netzfrequenz
     Serial.println();
     vTaskDelay(500);
     Serial.print("AT+SENDICA=property,PowerSwitch,");
-    Serial.print(mainswitch); // Ausgabe aktueller Ein/Aus Status
+    Serial.print(flashdata.mainswitch); // Ausgabe aktueller Ein/Aus Status
     Serial.print(",Day_Energy,");
     Serial.print(energie_tag / 654545.4, 2); // Ausgabe berechnete Energie seit einschalten
     Serial.print(",Plant,0.0,Emission,0.0,Time,30,P_adj,");
-    Serial.print(leistungsanforderung); // Ausgabe aktuelle Leistungsanforderung
+    Serial.print(flashdata.leistungsanforderung); // Ausgabe aktuelle Leistungsanforderung
     Serial.println(",TEMP_SET,64");
     Serial.println();
-    vTaskDelay(5000);
+    if (xSemaphoreTake(sem1, 0) == pdTRUE)
+    {
+      myflash.write(0, (uint8_t *)&flashdata, sizeof(flashdata));
+      myflash.commit();
+    }
+    xTaskDelayUntil(&lastwaketime, 5500);
   }
 }
 
@@ -303,10 +319,11 @@ void tsk_com_rcv(void *param)
         {
           ch[0] = Serial.read();
           if (ch[0] == '0')
-            mainswitch = 0;
+            flashdata.mainswitch = 0;
           if (ch[0] == '1')
-            mainswitch = 1;
+            flashdata.mainswitch = 1;
           step = 0;
+          xSemaphoreGive(sem1);
         }
         break;
       }
@@ -314,8 +331,9 @@ void tsk_com_rcv(void *param)
       {
         if (Serial.read() == ',')
         {
-          leistungsanforderung = Serial.parseInt();
+          flashdata.leistungsanforderung = Serial.parseInt();
           step = 0;
+          xSemaphoreGive(sem1);
         }
         break;
       }
@@ -360,7 +378,7 @@ void zcd_int()
 
 void t13ov_int()
 {
-  TIMER_CH0CV(TIMER15) = (sinus2[(uint8_t)Synccounter & 0b01111111] * (uint32_t)U_out) >> 8;
+  TIMER_CH0CV(TIMER15) = (sinus2[(uint8_t)Synccounter & 0b01111111] * U_out) >> 8;
   if (cnt100ms < 1282) // alle 1282 x 78us = 100ms (72MHz/5625=78us)
   {
     cnt100ms++;
@@ -383,9 +401,18 @@ PWM mypwm(PB8);
 HardwareTimer mytim(TIMER13);
 void setup()
 {
-
+  myflash.begin();
+  myflash.read(0, (uint8_t *)&flashdata, sizeof(flashdata));
+  if ((flashdata.leistungsanforderung > 100) || (flashdata.mainswitch > 1))
+  {
+    flashdata.energie_gesamt = 0.0;
+    flashdata.leistungsanforderung = 100;
+    flashdata.mainswitch = 1;
+  }
   Serial.begin(115200);
-  Serial.println("AT+E");     // WLAN-Modul Echo aus
+  delay(5000);
+  Serial.println("AT+E=off"); // WLAN-Modul Echo aus
+  delay(1000);
   // I/O-Pins einstellen
   pinMode(PB13, OUTPUT);      // LED-rot
   pinMode(PB12, OUTPUT);      // LED-blau
@@ -411,8 +438,9 @@ void setup()
 
   mypwm.setPeriodCycle(100, 0);
   TIMER_PSC(TIMER15) = 6;
-  TIMER_CAR(TIMER15) = 1000;
+  TIMER_CAR(TIMER15) = 1024;
   TIMER_CH0CV(TIMER15) = 1;
+  TIMER_SWEVG(TIMER15) |= (uint32_t)TIMER_SWEVG_UPG;
   mypwm.start();
   mytim.setPrescaler(1);
   mytim.setReloadValue(5625); // 112,5 / 1Hz
@@ -421,14 +449,14 @@ void setup()
   //---------------------------------------------------------------------------
 
   // Tasks und Interrupt erzeugen
-  xTaskCreate(tsk_main, "task1", 200, NULL, 1, &hdl1);     // Haupttask
-  xTaskCreate(tsk_com_send, "task2", 100, NULL, 0, &hdl2); // Kommunikationstask zum senden
-  xTaskCreate(tsk_com_rcv, "task3", 100, NULL, 0, &hdl3);  // Kommunikationstask zum empfangen
-  attachInterrupt(PA6, zcd_int, RISING);                   // Zerocross Interrupt
-  vTaskStartScheduler();                                   // Tasks starten
+  sem1 = xSemaphoreCreateBinary();
+  xTaskCreate(tsk_main, "task1", 200, NULL, 1, &hdl1);    // Haupttask
+  xTaskCreate(tsk_com_send, "task2", 80, NULL, 0, &hdl2); // Kommunikationstask zum senden
+  xTaskCreate(tsk_com_rcv, "task3", 80, NULL, 0, &hdl3);  // Kommunikationstask zum empfangen
+  attachInterrupt(PA6, zcd_int, RISING);                  // Zerocross Interrupt
+  vTaskStartScheduler();                                  // Tasks starten
 }
 
 void loop()
 {
-  
 }
