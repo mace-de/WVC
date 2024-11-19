@@ -230,6 +230,7 @@ void tsk_com_send(void *param)
     float leistung = (gu * gi) / 2678779.07;
     energie_tag += leistung;
     flashdata.energie_gesamt += leistung;
+    vTaskDelay(500);
     Serial.print("AT+SENDICA=property,PV_Volt,");
     Serial.print(gu / 970.0, 1); // ausgabe Solarspannung in V
     Serial.print(",PV_Current,");
@@ -247,14 +248,16 @@ void tsk_com_send(void *param)
     Serial.print(",Power_adjustment,");
     Serial.print(flashdata.leistungsanforderung); // Ausgabe aktuelle Leistungsanforderung
     Serial.print(",Energy,");
-    Serial.println(TIMER_CAR(TIMER13) / 112.5); // Ausgabe gemessene Netzfrequenz
+    Serial.println(flashdata.energie_gesamt / 654545.4, 2); // Ausgabe gemessene Netzfrequenz
     Serial.println();
     vTaskDelay(500);
     Serial.print("AT+SENDICA=property,PowerSwitch,");
     Serial.print(flashdata.mainswitch); // Ausgabe aktueller Ein/Aus Status
     Serial.print(",Day_Energy,");
     Serial.print(energie_tag / 654545.4, 2); // Ausgabe berechnete Energie seit einschalten
-    Serial.print(",Plant,0.0,Emission,0.0,Time,30,P_adj,");
+    Serial.print(",Plant,");
+    Serial.print(TIMER_CAR(TIMER13) / 112.5); // Ausgabe gemessene Netzfrequenz
+    Serial.print(",Emission,0.0,Time,30,P_adj,");
     Serial.print(flashdata.leistungsanforderung); // Ausgabe aktuelle Leistungsanforderung
     Serial.println(",TEMP_SET,64");
     Serial.println();
@@ -318,7 +321,18 @@ void tsk_com_rcv(void *param)
         }
         break;
       }
-      case 4: // Powerswitch
+      case 3: // Gesamtenergie Rücksetzen
+      {
+        if (Serial.read() == ',')
+        {
+          ch[0] = Serial.read();
+          if (ch[0] == '1')
+            flashdata.energie_gesamt = 0.0;
+          step = 0;
+        }
+        break;
+      }
+     case 4: // Powerswitch
       {
         if (Serial.read() == ',')
         {
@@ -413,7 +427,7 @@ void setup()
     flashdata.mainswitch = 1;
   }
   Serial.begin(115200);
-  delay(5000);
+  delay(4000);
   Serial.println("AT+E=off"); // WLAN-Modul Echo aus
   delay(1000);
   // I/O-Pins einstellen
@@ -428,15 +442,16 @@ void setup()
   pinMode(PA0, INPUT_ANALOG); // Spannung Netz (glatt)
   pinMode(PA4, INPUT_ANALOG); // Spannung Netz (puls)
   pinMode(PA6, INPUT);        // Zerocross
+  pinMode(PC14, INPUT);       // Optokoppler zwischen Wandler und Netzrelais
   digitalWrite(PB11, 1);      // Relais 115V/230V immer auf 230V
   digitalWrite(PA12, 1);      // PWM-Regler aus
   digitalWrite(PB12, 0);      // LED-blau aus
-  digitalWrite(PB13, 1);      // LED-rot ein
+  
   digitalWrite(PC13, 0);      // Relais-Netz aus
   //--------------------------------------------------------------------------
   adc_config();
 
-  // Timer für PWM und Haupttakt einstellen 10kHz PWM und 72MHz/256/5625=50Hz
+  // Timer für PWM und Haupttakt einstellen 72MHz/7/1024=10kHz PWM und 72MHz/256/5625=50Hz
   // einstellen über Arduino Funktionen dann Zugriff nur noch über SPL
 
   mypwm.setPeriodCycle(100, 0);
@@ -456,6 +471,7 @@ void setup()
   xTaskCreate(tsk_com_send, "task2", 80, NULL, 0, &hdl2); // Kommunikationstask zum senden
   xTaskCreate(tsk_com_rcv, "task3", 80, NULL, 0, &hdl3);  // Kommunikationstask zum empfangen
   attachInterrupt(PA6, zcd_int, RISING);                  // Zerocross Interrupt
+  digitalWrite(PB13, 1);                                  // LED-rot ein wenn alles geklappt hat
   vTaskStartScheduler();                                  // Tasks starten
 }
 
