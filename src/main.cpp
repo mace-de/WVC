@@ -9,14 +9,16 @@
 #include "myadc.h"
 #include "lut.h"
 
-#define Mittel_aus 16 // gleitendens Mittel aus X Werten (Maximal 63 sonst Überlauf)
+#define Mittel_aus 16                       // gleitendens Mittel aus X Werten (Maximal 63 sonst Überlauf)
+#define Einschaltspannung 1700 * Mittel_aus // Einschaltspannung 28V
+#define Abschaltspannung 1160 * Mittel_aus  // Abschaltspannung 19V
 
 const uint32_t minimalspannung_abs = 1576 * Mittel_aus; //= etwa 26V darunter kann der Wandler wegen zu geringer Ausgangsspannung
                                                         // an den Scheitelpunkten nicht ins Netz einspeisen (61) = 1V
 const uint32_t maximalstrom_abs = 2200 * Mittel_aus;    //= etwa 15A darüber wird der WR wohl verglühen (148) = 1A
 
 volatile uint32_t U_out = 0, Synccounter = 0, abregelwert = 0, cnt100ms = 0, gu = 0, gi = 0, gun = 0, gt = 0;
-volatile uint8_t  counter = 0;
+volatile uint8_t counter = 0;
 volatile bool flag100ms = 0, Sync = 0;
 volatile float energie_tag = 0;
 volatile struct s_flashdata
@@ -24,17 +26,16 @@ volatile struct s_flashdata
   float energie_gesamt;
   uint8_t mainswitch, leistungsanforderung;
 } flashdata;
-TaskHandle_t hdl1, hdl2, hdl3, hdl4;
+TaskHandle_t hdl1, hdl2, hdl3;
 HardwareSerial Serial(PB7, PB6, 0);
 FlashStorage<sizeof(flashdata)> myflash;
-xSemaphoreHandle sem1;
 
 void tsk_main(void *param)
 {
   while (1)
   {
     static uint8_t Schritt = 1, cnt_a = 0;
-    static bool teilbereichsuche = false;
+    static bool teilbereichsuche = false, vlock = true;
     static uint32_t spannung_MPP = 0, Langzeitzaehler = 0, minimalspannung = 0, maximalspannung = 0, maximalstrom = 0, startverz = 0;
     static uint32_t leistung_MPP = 0, maximalstrom_la = 0;
     static uint32_t spannung = 0, strom = 0, spannung_a[Mittel_aus], strom_a[Mittel_aus], temperatur = 0;
@@ -55,6 +56,16 @@ void tsk_main(void *param)
       spannung -= spannung_a[cnt_a];
       spannung_a[cnt_a] = adc_channel_sample(ADC_CHANNEL_7); // 970 (61) = 1V
       spannung += spannung_a[cnt_a];
+      if (spannung > Einschaltspannung)
+      {
+        vlock = false;
+      }
+      if (vlock == false && spannung < Abschaltspannung)
+      {
+        vlock = true;
+        myflash.write(0, (uint8_t *)&flashdata, sizeof(flashdata));
+        myflash.commit();
+      }
       strom -= strom_a[cnt_a];
       int32_t t_strom = adc_channel_sample(ADC_CHANNEL_1) - 130; // 2375 (148) = 1A
       strom_a[cnt_a] = t_strom < 0 ? 0 : t_strom;
@@ -95,7 +106,7 @@ void tsk_main(void *param)
       case 1: // Warteschritt
         // auf Netzsyncronität warten
         {
-          if (Sync && flashdata.mainswitch)
+          if (Sync && flashdata.mainswitch && !vlock)
           {
             if (startverz < 300)
             { // wenn startklar noch 30 Sekunden warten
@@ -197,7 +208,6 @@ void tsk_main(void *param)
         // Wandlerstom dazu auf 1/8 absenken, Suche starten und die permanenten Daten in den Flash schreiben
         if (Langzeitzaehler == 18000)
         {
-          xSemaphoreGive(sem1);
           leistung_MPP = 0;
           Langzeitzaehler = 0;
           U_out = U_out >> 3;
@@ -248,11 +258,6 @@ void tsk_com_send(void *param)
     Serial.print(flashdata.leistungsanforderung); // Ausgabe aktuelle Leistungsanforderung
     Serial.println(",TEMP_SET,64");
     Serial.println();
-    if (xSemaphoreTake(sem1, 0) == pdTRUE)
-    {
-      myflash.write(0, (uint8_t *)&flashdata, sizeof(flashdata));
-      myflash.commit();
-    }
     xTaskDelayUntil(&lastwaketime, 5500);
   }
 }
@@ -323,7 +328,6 @@ void tsk_com_rcv(void *param)
           if (ch[0] == '1')
             flashdata.mainswitch = 1;
           step = 0;
-          xSemaphoreGive(sem1);
         }
         break;
       }
@@ -333,7 +337,6 @@ void tsk_com_rcv(void *param)
         {
           flashdata.leistungsanforderung = Serial.parseInt();
           step = 0;
-          xSemaphoreGive(sem1);
         }
         break;
       }
@@ -449,7 +452,6 @@ void setup()
   //---------------------------------------------------------------------------
 
   // Tasks und Interrupt erzeugen
-  sem1 = xSemaphoreCreateBinary();
   xTaskCreate(tsk_main, "task1", 200, NULL, 1, &hdl1);    // Haupttask
   xTaskCreate(tsk_com_send, "task2", 80, NULL, 0, &hdl2); // Kommunikationstask zum senden
   xTaskCreate(tsk_com_rcv, "task3", 80, NULL, 0, &hdl3);  // Kommunikationstask zum empfangen
