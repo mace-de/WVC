@@ -11,7 +11,7 @@
 
 #define Mittel_aus 16                       // gleitendens Mittel aus X Werten (Maximal 63 sonst Überlauf)
 #define Einschaltspannung 1700 * Mittel_aus // Einschaltspannung 28V
-#define Abschaltspannung 1160 * Mittel_aus  // Abschaltspannung 19V
+#define Abschaltspannung 1160               // Abschaltspannung 19V
 
 const uint32_t minimalspannung_abs = 1576 * Mittel_aus; //= etwa 26V darunter kann der Wandler wegen zu geringer Ausgangsspannung
                                                         // an den Scheitelpunkten nicht ins Netz einspeisen (61) = 1V
@@ -60,7 +60,7 @@ void tsk_main(void *param)
       {
         vlock = false;
       }
-      if (vlock == false && spannung < Abschaltspannung)
+      if (vlock == false && spannung_a[cnt_a] < Abschaltspannung)
       {
         vlock = true;
         myflash.write(0, (uint8_t *)&flashdata, sizeof(flashdata));
@@ -446,7 +446,6 @@ void setup()
   digitalWrite(PB11, 1);      // Relais 115V/230V immer auf 230V
   digitalWrite(PA12, 1);      // PWM-Regler aus
   digitalWrite(PB12, 0);      // LED-blau aus
-  
   digitalWrite(PC13, 0);      // Relais-Netz aus
   //--------------------------------------------------------------------------
   adc_config();
