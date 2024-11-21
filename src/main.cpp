@@ -29,7 +29,7 @@ volatile struct s_flashdata
 TaskHandle_t hdl1, hdl2, hdl3;
 HardwareSerial Serial(PB7, PB6, 0);
 FlashStorage<sizeof(flashdata)> myflash;
-
+void relaischeck();
 void tsk_main(void *param)
 {
   while (1)
@@ -444,8 +444,7 @@ void setup()
   }
   Serial.begin(115200);
   delay(4000);
-  Serial.println("AT+E=off"); // WLAN-Modul Echo aus
-  delay(1000);
+
   // I/O-Pins einstellen
   pinMode(PB13, OUTPUT);      // LED-rot
   pinMode(PB12, OUTPUT);      // LED-blau
@@ -458,14 +457,17 @@ void setup()
   pinMode(PA0, INPUT_ANALOG); // Spannung Netz (glatt)
   pinMode(PA4, INPUT_ANALOG); // Spannung Netz (puls)
   pinMode(PA6, INPUT);        // Zerocross
-  pinMode(PC14, INPUT);       // Optokoppler zwischen Wandler und Netzrelais
+  pinMode(PC14, INPUT_ANALOG);       // Optokoppler zwischen Wandler und Netzrelais
   digitalWrite(PB11, 1);      // Relais 115V/230V immer auf 230V
   digitalWrite(PA12, 1);      // PWM-Regler aus
   digitalWrite(PB12, 0);      // LED-blau aus
   digitalWrite(PC13, 0);      // Relais-Netz aus
+  digitalWrite(PB13, 1);      // LED-rot ein
   //--------------------------------------------------------------------------
-  adc_config();
-
+  adc_config(); 
+  relaischeck();
+  Serial.println("AT+E=off"); // WLAN-Modul Echo aus
+  delay(1000);
   // Timer für PWM und Haupttakt einstellen 72MHz/7/1024=10kHz PWM und 72MHz/256/5625=50Hz
   // einstellen über Arduino Funktionen dann Zugriff nur noch über SPL
 
@@ -486,10 +488,78 @@ void setup()
   xTaskCreate(tsk_com_send, "task2", 80, NULL, 0, &hdl2); // Kommunikationstask zum senden
   xTaskCreate(tsk_com_rcv, "task3", 80, NULL, 0, &hdl3);  // Kommunikationstask zum empfangen
   attachInterrupt(PA6, zcd_int, RISING);                  // Zerocross Interrupt
-  digitalWrite(PB13, 1);                                  // LED-rot ein wenn alles geklappt hat
-  vTaskStartScheduler();                                  // Tasks starten
+
+  vTaskStartScheduler(); // Tasks starten
 }
 
 void loop()
 {
+}
+void relaischeck()
+{
+  boolean last_zcd, last_opto, zcd_temp, opto_temp;
+  uint32_t zcd_cnt2, opto_cnt2, zcd_millis, opto_millis, schritt = 0;
+  int32_t zcd_cnt1 = 0, opto_cnt1 = 0;
+
+  while (1)
+  {
+    zcd_temp = gpio_input_bit_get(GPIOA, GPIO_PIN_6);
+    opto_temp = gpio_input_bit_get(GPIOC, GPIO_PIN_14);
+    if (zcd_temp == !last_zcd)
+    {
+      last_zcd = zcd_temp;
+      zcd_cnt1++;
+    }
+    if (opto_temp == !last_opto)
+    {
+      last_opto = opto_temp;
+      opto_cnt1++;
+    }
+    switch (schritt)
+    {
+    case 0:
+    {
+      if (zcd_cnt1 > 100)
+      {
+        schritt = 1;
+        zcd_cnt1 = 0;
+        zcd_millis = millis() + 2000;
+        opto_millis = millis() + 1000;
+      }
+      break;
+    }
+    case 1:
+    {
+      if (millis() > opto_millis)
+      {
+        schritt = 2;
+        gpio_bit_set(GPIOC, GPIO_PIN_13); // Netzrelais ein
+      }
+      break;
+    }
+    case 2:
+    {
+      if (millis() > zcd_millis)
+      {
+        schritt = 3;
+        gpio_bit_reset(GPIOC, GPIO_PIN_13); // Netzrelais aus
+      }
+      break;
+    }
+    case 3:
+    {
+      if (abs(zcd_cnt1 - (2 * opto_cnt1)) < 5)
+        return;
+      while (1)
+      {
+      }
+    }
+    default:
+    {
+      while (1)
+      {
+      }
+    }
+    }
+  }
 }
