@@ -37,7 +37,7 @@ void tsk_main(void *param)
     static uint8_t Schritt = 1, cnt_a = 0;
     static bool teilbereichsuche = false, vlock = true;
     static uint32_t spannung_MPP = 0, Langzeitzaehler = 0, minimalspannung = 0, maximalspannung = 0, maximalstrom = 0, startverz = 0;
-    static uint32_t leistung_MPP = 0, maximalstrom_la = 0;
+    static uint32_t leistung_MPP = 0, maximalstrom_la = 0, store_enable_counter = 0;
     static uint32_t spannung = 0, strom = 0, spannung_a[Mittel_aus], strom_a[Mittel_aus], temperatur = 0;
     uint32_t leistung, netzspannung;
     // sobald die Netzsyncronität verloren geht Wandler Stom abschalten und in den Warteschritt gehen
@@ -56,15 +56,19 @@ void tsk_main(void *param)
       spannung -= spannung_a[cnt_a];
       spannung_a[cnt_a] = adc_channel_sample(ADC_CHANNEL_7); // 970 (61) = 1V
       spannung += spannung_a[cnt_a];
-      if (spannung > Einschaltspannung)
+      if (spannung > Einschaltspannung) // wenn PV-Spannung größer Einschaltspannung, Wechselrichter Freigeben
       {
         vlock = false;
       }
-      if (vlock == false && spannung_a[cnt_a] < Abschaltspannung)
-      {
+      if ((vlock == false) && (spannung_a[cnt_a] < Abschaltspannung)) // wenn PV-Spannung unter Abschaltspannung fällt, permanente Daten im Flash sichern
+      {                                                               // und Wechselrichter sperren
         vlock = true;
-        myflash.write(0, (uint8_t *)&flashdata, sizeof(flashdata));
-        myflash.commit();
+        if (store_enable_counter > 36000) // Flash speichern nur wenn PV-Spannung eine Stunde größer als Abschaltspannung
+        {                                 // verhindert wiederholtes flashen bei zu wenig Licht
+          myflash.write(0, (uint8_t *)&flashdata, sizeof(flashdata));
+          myflash.commit();
+        }
+        store_enable_counter = 0;
       }
       strom -= strom_a[cnt_a];
       int32_t t_strom = adc_channel_sample(ADC_CHANNEL_1) - 130; // 2375 (148) = 1A
@@ -94,6 +98,7 @@ void tsk_main(void *param)
     // Haupttakt alle 100ms
     else
     {
+      store_enable_counter++;
       flag100ms = false;
       temperatur = adc_channel_sample(ADC_CHANNEL_8); // Temperatur im Gehäuse messen
       gt = temperatur;
@@ -328,11 +333,13 @@ void tsk_com_rcv(void *param)
           ch[0] = Serial.read();
           if (ch[0] == '1')
             flashdata.energie_gesamt = 0.0;
+          myflash.write(0, (uint8_t *)&flashdata, sizeof(flashdata));
+          myflash.commit();
           step = 0;
         }
         break;
       }
-     case 4: // Powerswitch
+      case 4: // Powerswitch
       {
         if (Serial.read() == ',')
         {
@@ -341,6 +348,8 @@ void tsk_com_rcv(void *param)
             flashdata.mainswitch = 0;
           if (ch[0] == '1')
             flashdata.mainswitch = 1;
+          myflash.write(0, (uint8_t *)&flashdata, sizeof(flashdata));
+          myflash.commit();
           step = 0;
         }
         break;
@@ -350,6 +359,8 @@ void tsk_com_rcv(void *param)
         if (Serial.read() == ',')
         {
           flashdata.leistungsanforderung = Serial.parseInt();
+          myflash.write(0, (uint8_t *)&flashdata, sizeof(flashdata));
+          myflash.commit();
           step = 0;
         }
         break;
