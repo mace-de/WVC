@@ -17,7 +17,7 @@ const uint32_t minimalspannung_abs = 1576 * Mittel_aus; //= etwa 26V darunter ka
                                                         // an den Scheitelpunkten nicht ins Netz einspeisen (61) = 1V
 const uint32_t maximalstrom_abs = 2200 * Mittel_aus;    //= etwa 15A darüber wird der WR wohl verglühen (148) = 1A
 
-volatile uint32_t U_out = 0, Synccounter = 0, abregelwert = 0, cnt100ms = 0, gu = 0, gi = 0, gun = 0, gt = 0;
+volatile uint32_t U_out = 0, Synccounter = 0, abregelwert = 0, cnt100ms = 0, gu = 0, gi = 0, gun = 0, gt = 0, gumpp = 0;
 volatile uint8_t counter = 0;
 volatile bool flag100ms = 0, Sync = 0;
 volatile float energie_tag = 0;
@@ -63,6 +63,7 @@ void tsk_main(void *param)
       if ((vlock == false) && (spannung_a[cnt_a] < Abschaltspannung)) // wenn PV-Spannung unter Abschaltspannung fällt, permanente Daten im Flash sichern
       {                                                               // und Wechselrichter sperren
         vlock = true;
+        Schritt = 0;
         if (store_enable_counter > 36000) // Flash speichern nur wenn PV-Spannung eine Stunde größer als Abschaltspannung
         {                                 // verhindert wiederholtes flashen bei zu wenig Licht
           myflash.write(0, (uint8_t *)&flashdata, sizeof(flashdata));
@@ -111,6 +112,7 @@ void tsk_main(void *param)
       case 1: // Warteschritt
         // auf Netzsyncronität warten
         {
+          gumpp = 0;
           if (Sync && flashdata.mainswitch && !vlock)
           {
             if (startverz < 300)
@@ -179,6 +181,7 @@ void tsk_main(void *param)
       {
         gpio_bit_set(GPIOB, GPIO_PIN_12);   // blau leuchtet
         gpio_bit_reset(GPIOB, GPIO_PIN_13); // rot aus
+        gumpp = spannung_MPP;
         // bei plötzlicher Verschattung leistung schnell reduzieren (Spannung fällt unter 24V)
         if (spannung < (minimalspannung_abs - 40 * Mittel_aus))
         {
@@ -262,7 +265,9 @@ void tsk_com_send(void *param)
     Serial.print(energie_tag / 654545.4, 2); // Ausgabe berechnete Energie seit einschalten
     Serial.print(",Plant,");
     Serial.print(TIMER_CAR(TIMER13) / 112.5); // Ausgabe gemessene Netzfrequenz
-    Serial.print(",Emission,0.0,Time,30,P_adj,");
+    Serial.print(",Emission,");
+    Serial.print(gumpp / 970.0, 2); // Ausgabe MPP-Spannung im CO2 Datenfeld
+    Serial.print(",Time,30,P_adj,");
     Serial.print(flashdata.leistungsanforderung); // Ausgabe aktuelle Leistungsanforderung
     Serial.println(",TEMP_SET,64");
     Serial.println();
