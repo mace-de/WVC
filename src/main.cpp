@@ -9,6 +9,7 @@
 #include "myadc.h"
 #include "lut.h"
 
+#define RELAYCHECK                          // Testfunktion Netzrelais für Nutzung muss R88 mit 10k Ohm überbrückt werden
 #define Mittel_aus 16                       // gleitendens Mittel aus X Werten (Maximal 63 sonst Überlauf)
 #define Einschaltspannung 1700 * Mittel_aus // Einschaltspannung 28V
 #define Abschaltspannung 1160               // Abschaltspannung 19V
@@ -29,7 +30,7 @@ volatile struct s_flashdata
 TaskHandle_t hdl1, hdl2, hdl3;
 HardwareSerial Serial(PB7, PB6, 0);
 FlashStorage<sizeof(flashdata)> myflash;
-
+void relaischeck();
 void tsk_main(void *param)
 {
   while (1)
@@ -444,28 +445,32 @@ void setup()
   }
   Serial.begin(115200);
   delay(4000);
-  Serial.println("AT+E=off"); // WLAN-Modul Echo aus
-  delay(1000);
+
   // I/O-Pins einstellen
-  pinMode(PB13, OUTPUT);      // LED-rot
-  pinMode(PB12, OUTPUT);      // LED-blau
-  pinMode(PC13, OUTPUT);      // Relais-Netz
-  pinMode(PA12, OUTPUT);      // Enable PWM-Regler (active low!)
-  pinMode(PB11, OUTPUT);      // Relais 115V/230V
-  pinMode(PA7, INPUT_ANALOG); // PV-Spannung
-  pinMode(PA1, INPUT_ANALOG); // PV-Strom
-  pinMode(PB0, INPUT_ANALOG); // Temperatursensor
-  pinMode(PA0, INPUT_ANALOG); // Spannung Netz (glatt)
-  pinMode(PA4, INPUT_ANALOG); // Spannung Netz (puls)
-  pinMode(PA6, INPUT);        // Zerocross
-  pinMode(PC14, INPUT);       // Optokoppler zwischen Wandler und Netzrelais
-  digitalWrite(PB11, 1);      // Relais 115V/230V immer auf 230V
-  digitalWrite(PA12, 1);      // PWM-Regler aus
-  digitalWrite(PB12, 0);      // LED-blau aus
-  digitalWrite(PC13, 0);      // Relais-Netz aus
+  pinMode(PB13, OUTPUT);       // LED-rot
+  pinMode(PB12, OUTPUT);       // LED-blau
+  pinMode(PC13, OUTPUT);       // Relais-Netz
+  pinMode(PA12, OUTPUT);       // Enable PWM-Regler (active low!)
+  pinMode(PB11, OUTPUT);       // Relais 115V/230V
+  pinMode(PA7, INPUT_ANALOG);  // PV-Spannung
+  pinMode(PA1, INPUT_ANALOG);  // PV-Strom
+  pinMode(PB0, INPUT_ANALOG);  // Temperatursensor
+  pinMode(PA0, INPUT_ANALOG);  // Spannung Netz (glatt)
+  pinMode(PA4, INPUT_ANALOG);  // Spannung Netz (puls)
+  pinMode(PA6, INPUT);         // Zerocross
+  pinMode(PC14, INPUT_PULLUP); // Optokoppler zwischen Wandler und Netzrelais
+  digitalWrite(PB11, 1);       // Relais 115V/230V immer auf 230V
+  digitalWrite(PA12, 1);       // PWM-Regler aus
+  digitalWrite(PB12, 0);       // LED-blau aus
+  digitalWrite(PC13, 0);       // Relais-Netz aus
+  digitalWrite(PB13, 1);       // LED-rot ein
   //--------------------------------------------------------------------------
   adc_config();
-
+#ifdef RELAYCHECK
+  relaischeck(); // Netzrelais testen
+#endif
+  Serial.println("AT+E=off"); // WLAN-Modul Echo aus
+  delay(1000);
   // Timer für PWM und Haupttakt einstellen 72MHz/7/1024=10kHz PWM und 72MHz/256/5625=50Hz
   // einstellen über Arduino Funktionen dann Zugriff nur noch über SPL
 
@@ -486,10 +491,84 @@ void setup()
   xTaskCreate(tsk_com_send, "task2", 80, NULL, 0, &hdl2); // Kommunikationstask zum senden
   xTaskCreate(tsk_com_rcv, "task3", 80, NULL, 0, &hdl3);  // Kommunikationstask zum empfangen
   attachInterrupt(PA6, zcd_int, RISING);                  // Zerocross Interrupt
-  digitalWrite(PB13, 1);                                  // LED-rot ein wenn alles geklappt hat
-  vTaskStartScheduler();                                  // Tasks starten
+
+  vTaskStartScheduler(); // Tasks starten
 }
 
 void loop()
 {
 }
+#ifdef RELAYCHECK
+void relaischeck()
+{
+  boolean last_zcd, last_opto, zcd_temp, opto_temp;
+  uint32_t zcd_cnt2, opto_cnt2, zcd_millis, opto_millis, schritt = 0;
+  int32_t zcd_cnt1 = 0, opto_cnt1 = 0;
+
+  while (1)
+  {
+    zcd_temp = gpio_input_bit_get(GPIOA, GPIO_PIN_6);
+    opto_temp = gpio_input_bit_get(GPIOC, GPIO_PIN_14);
+    if (zcd_temp == !last_zcd) // ZCD Pin Flanken zählen
+    {
+      last_zcd = zcd_temp;
+      zcd_cnt1++;
+    }
+    if (opto_temp == !last_opto) // Optokoppler Pin Flanken zählen
+    {
+      last_opto = opto_temp;
+      opto_cnt1++;
+    }
+    switch (schritt)
+    {
+    case 0:
+    {
+      if (zcd_cnt1 > 100) // warten bis Netz vorhanden
+      {
+        schritt = 1;
+        zcd_cnt1 = 0;
+        zcd_millis = millis() + 2000;
+        opto_millis = millis() + 1000;
+      }
+      break;
+    }
+    case 1: // 1 Sekunde nur ZCD Flanken zählen
+    {
+      if (millis() > opto_millis)
+      {
+        schritt = 2;
+        gpio_bit_set(GPIOC, GPIO_PIN_13); // Netzrelais ein
+      }
+      break;
+    }
+    case 2: // 1 Sekunde ZCD und Optokoppler Flanken zählen
+    {
+      if (millis() > zcd_millis)
+      {
+        schritt = 3;
+        gpio_bit_reset(GPIOC, GPIO_PIN_13); // Netzrelais aus
+      }
+      break;
+    }
+    case 3: // Ergebnis prüfen
+    {
+      if (abs(zcd_cnt1 - (2 * opto_cnt1)) < 5) // es müssen etwa doppelt so viele Flanken an ZCD aufgetreten sein wie am Optokoppler
+        return;                                // wenn ja, OK
+      while (1)                                // wenn nein, WR sperren und rote LED langsam blinken da Relais möglicherweise fehlerhaft
+      {
+        gpio_bit_reset(GPIOB, GPIO_PIN_13); // rot aus
+        delay(1000);
+        gpio_bit_set(GPIOB, GPIO_PIN_13); // rot ein
+        delay(1000);
+      }
+    }
+    default:
+    {
+      while (1)
+      {
+      }
+    }
+    }
+  }
+}
+#endif
