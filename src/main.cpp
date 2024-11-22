@@ -12,7 +12,7 @@
 #define RELAYCHECK                          // Testfunktion Netzrelais für Nutzung muss R88 mit 10k Ohm überbrückt werden
 #define Mittel_aus 16                       // gleitendens Mittel aus X Werten (Maximal 63 sonst Überlauf)
 #define Einschaltspannung 1700 * Mittel_aus // Einschaltspannung 28V
-#define Abschaltspannung 1160 * Mittel_aus	// Abschaltspannung 19V
+#define Abschaltspannung 1160 * Mittel_aus  // Abschaltspannung 19V
 #define TaktHauptschleife 100               // Zykluszeit Haupttakt in ms
 
 const uint32_t minimalspannung_abs = 1576 * Mittel_aus; //= etwa 26V darunter kann der Wandler wegen zu geringer Ausgangsspannung
@@ -26,7 +26,7 @@ volatile float energie_tag = 0;
 volatile struct s_flashdata
 {
   float energie_gesamt;
-  uint8_t mainswitch, leistungsanforderung;
+  uint8_t mainswitch, leistungsanforderung, kalibrirung, startverzoegerung;
 } flashdata;
 TaskHandle_t hdl1, hdl2, hdl3;
 HardwareSerial Serial(PB7, PB6, 0);
@@ -57,25 +57,26 @@ void tsk_main(void *param)
       if (cnt_a > Mittel_aus - 1)
         cnt_a = 0;
       spannung -= spannung_a[cnt_a];
-      spannung_a[cnt_a] = adc_channel_sample(ADC_CHANNEL_7); // 970 (61) = 1V
+      int32_t t_spannung = (adc_channel_sample(ADC_CHANNEL_7) * 50) / flashdata.kalibrirung; // 970 (61) = 1V
+      spannung_a[cnt_a] = t_spannung;
       spannung += spannung_a[cnt_a];
       if (spannung > Einschaltspannung) // wenn PV-Spannung größer Einschaltspannung, Wechselrichter Freigeben
       {
         vlock = false;
       }
       if ((vlock == false) && (spannung < Abschaltspannung)) // wenn PV-Spannung unter Abschaltspannung fällt, permanente Daten im Flash sichern
-      {                                                               // und Wechselrichter sperren
+      {                                                      // und Wechselrichter sperren
         vlock = true;
         Schritt = 0;
-        if (store_enable_counter > 3600000/TaktHauptschleife) // Flash speichern nur wenn PV-Spannung eine Stunde größer als Abschaltspannung
-        {                                 // verhindert wiederholtes flashen bei zu wenig Licht
+        if (store_enable_counter > 3600000 / TaktHauptschleife) // Flash speichern nur wenn PV-Spannung eine Stunde größer als Abschaltspannung
+        {                                                       // verhindert wiederholtes flashen bei zu wenig Licht
           myflash.write(0, (uint8_t *)&flashdata, sizeof(flashdata));
           myflash.commit();
         }
         store_enable_counter = 0;
       }
       strom -= strom_a[cnt_a];
-      int32_t t_strom = adc_channel_sample(ADC_CHANNEL_1) - 130; // 2375 (148) = 1A
+      int32_t t_strom = ((adc_channel_sample(ADC_CHANNEL_1) - 130) * 50) / flashdata.kalibrirung; // 2375 (148) = 1A
       strom_a[cnt_a] = t_strom < 0 ? 0 : t_strom;
       strom += strom_a[cnt_a];
       cnt_a++;
@@ -118,7 +119,7 @@ void tsk_main(void *param)
           gumpp = 0;
           if (Sync && flashdata.mainswitch && !vlock)
           {
-            if (startverz < 3000 / TaktHauptschleife)
+            if (startverz < (flashdata.startverzoegerung*1000) / TaktHauptschleife)
             { // wenn startklar noch 30 Sekunden warten
               startverz++;
               gpio_bit_reset(GPIOB, GPIO_PIN_12);                                                       // blau aus
@@ -170,14 +171,14 @@ void tsk_main(void *param)
             else
             {
               teilbereichsuche = false;
-              f_U_out=0;
+              f_U_out = 0;
               Schritt = 3;
             }
           }
           else
           {
             teilbereichsuche = false;
-            f_U_out=0;
+            f_U_out = 0;
             Schritt = 3;
           }
           break;
@@ -202,10 +203,12 @@ void tsk_main(void *param)
           }
           else
           {
-            f_U_out = f_U_out + ((float) spannung - (float) spannung_MPP) / (Mittel_aus * 61 * guout); // Augangsstrom regeln
+            f_U_out = f_U_out + ((float)spannung - (float)spannung_MPP) / (Mittel_aus * 61 * guout); // Augangsstrom regeln
           }
-          if(f_U_out < 0.0)f_U_out= 0.0;
-          if(f_U_out > 1023.0)f_U_out= 1023.0;
+          if (f_U_out < 0.0)
+            f_U_out = 0.0;
+          if (f_U_out > 1023.0)
+            f_U_out = 1023.0;
         }
         Langzeitzaehler++;
         // alle 10 min gucken ob sich die MPP Spannung durch änderung der Zellentemperatur verschoben hat
@@ -274,7 +277,7 @@ void tsk_com_send(void *param)
     Serial.print(",Emission,");
     Serial.print(gumpp / 970.0, 2); // Ausgabe MPP-Spannung im CO2 Datenfeld
     Serial.print(",Time,30,P_adj,");
-    Serial.print(guout); // Ausgabe aktuelle Leistungsanforderung
+    Serial.print(flashdata.kalibrirung); // Ausgabe aktueller Kalibrierungswert
     Serial.println(",TEMP_SET,64");
     Serial.println();
     xTaskDelayUntil(&lastwaketime, 5500);
@@ -316,26 +319,26 @@ void tsk_com_rcv(void *param)
           ch[0] = Serial.read();
           ch[1] = Serial.read();
           if (ch[0] == 'E' && ch[1] == 'n') //+ILOPDATA=ICA,Energy_Cleared,0<\r><\n>
-            step = 3;
-          if (ch[0] == 'P')
-          {
+            step = 3;                       //              ^^
+          if (ch[0] == 'P')                 //+ILOPDATA=ICA,PowerSwitch,0<\r><\n>
+          {                                 //              ^
             for (int i = 2; i < 6; i++)
             {
               ch[i] = Serial.read();
             }
-            if (ch[5] == 'S') //+ILOPDATA=ICA,PowerSwitch,0<\r><\n>
-              step = 4;
-            if (ch[5] == '_') //+ILOPDATA=ICA,Power_adjust,100<\r><\n>
-              step = 8;
+            if (ch[5] == 'S')               //+ILOPDATA=ICA,PowerSwitch,0<\r><\n>
+              step = 4;                     //                   ^
+            if (ch[5] == '_')               //+ILOPDATA=ICA,Power_adjust,100<\r><\n>
+              step = 8;                     //                   ^
           }
           if (ch[0] == 'T' && ch[1] == 'i') //+ILOPDATA=ICA,Time,40<\r><\n>
-            step = 5;
+            step = 5;                       //              ^^
           if (ch[0] == 'C' && ch[1] == 'h') //+ILOPDATA=ICA,Channel,1<\r><\n>
-            step = 6;
-          if (ch[0] == 'M' && ch[1] == '0') //+ILOPDATA=ICA,Model,4<\r><\n>
-            step = 7;
+            step = 6;                       //              ^^
+          if (ch[0] == 'M' && ch[1] == 'o') //+ILOPDATA=ICA,Model,4<\r><\n>
+            step = 7;                       //              ^^
           if (ch[0] == 'P' && ch[1] == '_') //+ILOPDATA=ICA,P_adj,70<\r><\n>
-            step = 9;
+            step = 9;                       //              ^^
         }
         break;
       }
@@ -378,11 +381,13 @@ void tsk_com_rcv(void *param)
         }
         break;
       }
-      case 9: // Leistungsbegrenzung
+      case 9: // ADC Kalibrierung
       {
         if (Serial.read() == ',')
         {
-          guout = Serial.parseInt();
+          flashdata.kalibrirung = Serial.parseInt();
+          myflash.write(0, (uint8_t *)&flashdata, sizeof(flashdata));
+          myflash.commit();
           step = 0;
         }
         break;
@@ -453,11 +458,12 @@ void setup()
 {
   myflash.begin();
   myflash.read(0, (uint8_t *)&flashdata, sizeof(flashdata));
-  if ((flashdata.leistungsanforderung > 100) || (flashdata.mainswitch > 1))
+  if ((flashdata.leistungsanforderung > 100) || (flashdata.mainswitch > 1) || (flashdata.kalibrirung > 100))
   {
     flashdata.energie_gesamt = 0.0;
     flashdata.leistungsanforderung = 100;
     flashdata.mainswitch = 1;
+    flashdata.kalibrirung = 50;
   }
   Serial.begin(115200);
   delay(4000);
