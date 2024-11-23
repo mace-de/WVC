@@ -8,6 +8,7 @@
 #include "FlashStorage_mod.h"
 #include "myadc.h"
 #include "lut.h"
+#include "relaycheck.h"
 
 #define RELAYCHECK                          // Testfunktion Netzrelais für Nutzung muss R88 mit 10k Ohm überbrückt werden
 #define Mittel_aus 16                       // gleitendens Mittel aus X Werten (Maximal 63 sonst Überlauf)
@@ -19,7 +20,7 @@ const uint32_t minimalspannung_abs = 1576 * Mittel_aus; //= etwa 26V darunter ka
                                                         // an den Scheitelpunkten nicht ins Netz einspeisen (61) = 1V
 const uint32_t maximalstrom_abs = 2200 * Mittel_aus;    //= etwa 15A darüber wird der WR wohl verglühen (148) = 1A
 
-volatile uint32_t U_out = 0, Synccounter = 0, abregelwert = 0, cnt_Haupttakt = 0, gu = 0, gi = 0, gun = 0, gt = 0, gumpp = 0;
+volatile uint32_t U_out = 0, Synccounter = 0, abregelwert = 0, cnt_Haupttakt = 0, gu = 0, gi = 0, gun = 0, gt = 0, gumpp = 0, ggeschw = 8;
 volatile uint8_t counter = 0;
 volatile bool Flag_Haupttakt = 0, Sync = 0;
 volatile float energie_tag = 0;
@@ -28,21 +29,22 @@ volatile struct s_flashdata
   float energie_gesamt;
   uint8_t mainswitch, leistungsanforderung, kalibrirung, startverzoegerung;
 } flashdata;
+
 TaskHandle_t hdl1, hdl2, hdl3;
 HardwareSerial Serial(PB7, PB6, 0);
 FlashStorage<sizeof(flashdata)> myflash;
-void relaischeck();
+
 void tsk_main(void *param)
 {
+  static uint8_t Schritt = 1, cnt_a = 0;
+  static bool teilbereichsuche = false, vlock = false;
+  static uint32_t spannung_MPP = 0, Langzeitzaehler = 0, minimalspannung = 0, maximalspannung = 0, maximalstrom = 0, startverz = 0;
+  static uint32_t leistung_MPP = 0, maximalstrom_la = 0, store_enable_counter = 0;
+  static uint32_t spannung = 0, strom = 0, netzspannung = 0, netzspannung_a[Mittel_aus], spannung_a[Mittel_aus], strom_a[Mittel_aus], temperatur = 0;
+  uint32_t leistung;
+  float f_U_out;
   while (1)
   {
-    static uint8_t Schritt = 1, cnt_a = 0;
-    static bool teilbereichsuche = false, vlock = false;
-    static uint32_t spannung_MPP = 0, Langzeitzaehler = 0, minimalspannung = 0, maximalspannung = 0, maximalstrom = 0, startverz = 0;
-    static uint32_t leistung_MPP = 0, maximalstrom_la = 0, store_enable_counter = 0;
-    static uint32_t spannung = 0, strom = 0, spannung_a[Mittel_aus], strom_a[Mittel_aus], temperatur = 0;
-    uint32_t leistung, netzspannung;
-    float f_U_out;
     // sobald die Netzsyncronität verloren geht Wandler Stom abschalten und in den Warteschritt gehen
     if (!Sync || !flashdata.mainswitch)
     {
@@ -60,6 +62,15 @@ void tsk_main(void *param)
       int32_t t_spannung = (adc_channel_sample(ADC_CHANNEL_7) * 50) / flashdata.kalibrirung; // 970 (61) = 1V
       spannung_a[cnt_a] = t_spannung;
       spannung += spannung_a[cnt_a];
+      strom -= strom_a[cnt_a];
+      int32_t t_strom = ((adc_channel_sample(ADC_CHANNEL_1) - 130) * 50) / flashdata.kalibrirung; // 2375 (148) = 1A
+      strom_a[cnt_a] = t_strom < 0 ? 0 : t_strom;
+      strom += strom_a[cnt_a];
+      netzspannung -= netzspannung_a[cnt_a];
+      int32_t t_netzspannung = (adc_channel_sample(ADC_CHANNEL_0) * 50) / flashdata.kalibrirung; // 4,186 / 1V
+      netzspannung_a[cnt_a] = t_netzspannung;
+      netzspannung += netzspannung_a[cnt_a];
+      cnt_a++;
       if (spannung > Einschaltspannung) // wenn PV-Spannung größer Einschaltspannung, Wechselrichter Freigeben
       {
         vlock = false;
@@ -75,19 +86,13 @@ void tsk_main(void *param)
         }
         store_enable_counter = 0;
       }
-      strom -= strom_a[cnt_a];
-      int32_t t_strom = ((adc_channel_sample(ADC_CHANNEL_1) - 130) * 50) / flashdata.kalibrirung; // 2375 (148) = 1A
-      strom_a[cnt_a] = t_strom < 0 ? 0 : t_strom;
-      strom += strom_a[cnt_a];
-      cnt_a++;
-      netzspannung = adc_channel_sample(ADC_CHANNEL_0);  // 4,186 / 1V
-      if ((netzspannung > 1060) || (netzspannung < 880)) // wenn Netzspannung unter 210V oder über 253V dann Wechselrichter aus
+      if ((netzspannung > 1060 * Mittel_aus) || (netzspannung < 880 * Mittel_aus)) // wenn Netzspannung unter 210V oder über 253V dann Wechselrichter aus
       {
         Sync = 0;
         gpio_bit_reset(GPIOC, GPIO_PIN_13); // Netzrelais aus
         gpio_bit_set(GPIOA, GPIO_PIN_12);   // Regler aus
       }
-      gun = netzspannung;
+      gun = netzspannung / Mittel_aus;
       gu = spannung;
       gi = strom;
       if (Schritt == 2)
@@ -107,8 +112,8 @@ void tsk_main(void *param)
       Flag_Haupttakt = false;
       temperatur = adc_channel_sample(ADC_CHANNEL_8); // Temperatur im Gehäuse messen
       gt = temperatur;
-      maximalstrom = (maximalstrom_abs * (225 - abregelwert)) / 225; // aktuellen Maximalstrom aus maximalem Wechselrichterstrom und dem Abregelwert berechnen
-      maximalstrom_la = (maximalstrom_abs * flashdata.leistungsanforderung) / 100;
+      maximalstrom = (maximalstrom_abs * (225 - abregelwert)) / 225;               // aktuellen Maximalstrom aus maximalem Wechselrichterstrom und dem Abregelwert berechnen
+      maximalstrom_la = (maximalstrom_abs * flashdata.leistungsanforderung) / 100; // Maximalstrom über die App begrenzen
       if (maximalstrom > maximalstrom_la)
         maximalstrom = maximalstrom_la;
       switch (Schritt)
@@ -116,8 +121,7 @@ void tsk_main(void *param)
       case 1: // Warteschritt
         // auf Netzsyncronität warten
         {
-          gumpp = 0;
-          if (Sync && flashdata.mainswitch && !vlock)
+          if (Sync && flashdata.mainswitch && !vlock) // alles ok?
           {
             if (startverz < (flashdata.startverzoegerung * 1000) / TaktHauptschleife)
             { // wenn startklar noch 30 Sekunden warten
@@ -138,8 +142,8 @@ void tsk_main(void *param)
               startverz = 0;
             }
           }
-          else
-          {                                     // wenn kein Netz
+          else // wenn kein Netz oder andere Störung
+          {
             gpio_bit_reset(GPIOB, GPIO_PIN_12); // blau aus
             gpio_bit_set(GPIOB, GPIO_PIN_13);   // rot leuchtet
             startverz = 0;
@@ -203,12 +207,16 @@ void tsk_main(void *param)
           }
           else
           {
-            f_U_out = f_U_out + ((float)spannung - (float)spannung_MPP) / (Mittel_aus * 61 * (80 - (strom / (43 * Mittel_aus)))); // Augangsstrom regeln
+            f_U_out = f_U_out + ((float)spannung - (float)spannung_MPP) / (Mittel_aus * 61 * ggeschw * 5); //(80 - (strom / (43 * Mittel_aus)))); // Augangsstrom regeln
           }
           if (f_U_out < 0.0)
+          {
             f_U_out = 0.0;
+          }
           if (f_U_out > 1023.0)
+          {
             f_U_out = 1023.0;
+          }
         }
         Langzeitzaehler++;
         // alle 10 min gucken ob sich die MPP Spannung durch änderung der Zellentemperatur verschoben hat
@@ -221,7 +229,7 @@ void tsk_main(void *param)
           Schritt = 2;
         }
         // alle 30min gucken ob sich durch verschattung ein neues globales maximum gebildet hat
-        // Wandlerstom dazu auf 1/8 absenken, Suche starten und die permanenten Daten in den Flash schreiben
+        // Wandlerstom dazu auf 1/8 absenken und Suche starten
         if (Langzeitzaehler == 1800000 / TaktHauptschleife)
         {
           leistung_MPP = 0;
@@ -273,14 +281,15 @@ void tsk_com_send(void *param)
     Serial.print(",Day_Energy,");
     Serial.print(energie_tag / 654545.4, 2); // Ausgabe berechnete Energie seit einschalten
     Serial.print(",Plant,");
-    Serial.print(TIMER_CAR(TIMER13) / 112.5); // Ausgabe gemessene Netzfrequenz
+    Serial.print(TIMER_CAR(TIMER13) / 112.5, 2); // Ausgabe gemessene Netzfrequenz
     Serial.print(",Emission,");
     Serial.print(gumpp / 970.0, 2); // Ausgabe MPP-Spannung im CO2 Datenfeld
     Serial.print(",Time,");
     Serial.print(flashdata.startverzoegerung); // Ausgabe Zeit Startverzögerung
     Serial.print(",P_adj,");
     Serial.print(flashdata.kalibrirung); // Ausgabe aktueller Kalibrierungswert
-    Serial.println(",TEMP_SET,64");
+    Serial.print(",TEMP_SET,");
+    Serial.println(70);
     Serial.println();
     xTaskDelayUntil(&lastwaketime, 5500);
   }
@@ -383,6 +392,18 @@ void tsk_com_rcv(void *param)
         }
         break;
       }
+      case 7: // Reglergeschwindigkeit
+      {
+        if (Serial.read() == ',')
+        {
+          ggeschw = Serial.parseInt() + 1;
+          // flashdata.startverzoegerung = Serial.parseInt();
+          // myflash.write(0, (uint8_t *)&flashdata, sizeof(flashdata));
+          // myflash.commit();
+          step = 0;
+        }
+        break;
+      }
       case 8: // Leistungsbegrenzung
       {
         if (Serial.read() == ',')
@@ -470,16 +491,16 @@ HardwareTimer mytim(TIMER13);
 void setup()
 {
   myflash.begin();
-  myflash.read(0, (uint8_t *)&flashdata, sizeof(flashdata));
+  myflash.read(0, (uint8_t *)&flashdata, sizeof(flashdata)); // Gespeicherte Daten aus dem Flash lesen...
   if ((flashdata.leistungsanforderung > 100) || (flashdata.mainswitch > 1) || (flashdata.kalibrirung > 100))
-  {
+  { // ...und auf plausibilität prüfen. Wenn was nicht passt, auf standard Werte setzen.
     flashdata.energie_gesamt = 0.0;
     flashdata.leistungsanforderung = 100;
     flashdata.mainswitch = 1;
     flashdata.kalibrirung = 50;
   }
   Serial.begin(115200);
-  delay(4000);
+  delay(4000); // Dem WLAN Modul etwas Zeit zum starten geben
 
   // I/O-Pins einstellen
   pinMode(PB13, OUTPUT);       // LED-rot
@@ -502,7 +523,7 @@ void setup()
   //--------------------------------------------------------------------------
   adc_config();
 #ifdef RELAYCHECK
-  relaischeck(); // Netzrelais testen
+  relaycheck(); // Netzrelais testen
 #endif
   Serial.println("AT+E=off"); // WLAN-Modul Echo aus
   delay(1000);
@@ -522,88 +543,13 @@ void setup()
   //---------------------------------------------------------------------------
 
   // Tasks und Interrupt erzeugen
-  xTaskCreate(tsk_main, "task1", 200, NULL, 1, &hdl1);    // Haupttask
-  xTaskCreate(tsk_com_send, "task2", 80, NULL, 0, &hdl2); // Kommunikationstask zum senden
-  xTaskCreate(tsk_com_rcv, "task3", 80, NULL, 0, &hdl3);  // Kommunikationstask zum empfangen
-  attachInterrupt(PA6, zcd_int, RISING);                  // Zerocross Interrupt
-
-  vTaskStartScheduler(); // Tasks starten
+  xTaskCreate(tsk_main, "task1", 70, NULL, 1, &hdl1);      // Haupttask
+  xTaskCreate(tsk_com_send, "task2", 100, NULL, 0, &hdl2); // Kommunikationstask zum senden
+  xTaskCreate(tsk_com_rcv, "task3", 70, NULL, 0, &hdl3);   // Kommunikationstask zum empfangen
+  attachInterrupt(PA6, zcd_int, RISING);                   // Zerocross Interrupt
+  vTaskStartScheduler();                                   // Tasks starten
 }
 
 void loop()
 {
 }
-#ifdef RELAYCHECK
-void relaischeck()
-{
-  boolean last_zcd, last_opto, zcd_temp, opto_temp;
-  uint32_t zcd_cnt2, opto_cnt2, zcd_millis, opto_millis, schritt = 0;
-  int32_t zcd_cnt1 = 0, opto_cnt1 = 0;
-
-  while (1)
-  {
-    zcd_temp = gpio_input_bit_get(GPIOA, GPIO_PIN_6);
-    opto_temp = gpio_input_bit_get(GPIOC, GPIO_PIN_14);
-    if (zcd_temp == !last_zcd) // ZCD Pin Flanken zählen
-    {
-      last_zcd = zcd_temp;
-      zcd_cnt1++;
-    }
-    if (opto_temp == !last_opto) // Optokoppler Pin Flanken zählen
-    {
-      last_opto = opto_temp;
-      opto_cnt1++;
-    }
-    switch (schritt)
-    {
-    case 0:
-    {
-      if (zcd_cnt1 > 100) // warten bis Netz vorhanden
-      {
-        schritt = 1;
-        zcd_cnt1 = 0;
-        zcd_millis = millis() + 2000;
-        opto_millis = millis() + 1000;
-      }
-      break;
-    }
-    case 1: // 1 Sekunde nur ZCD Flanken zählen
-    {
-      if (millis() > opto_millis)
-      {
-        schritt = 2;
-        gpio_bit_set(GPIOC, GPIO_PIN_13); // Netzrelais ein
-      }
-      break;
-    }
-    case 2: // 1 Sekunde ZCD und Optokoppler Flanken zählen
-    {
-      if (millis() > zcd_millis)
-      {
-        schritt = 3;
-        gpio_bit_reset(GPIOC, GPIO_PIN_13); // Netzrelais aus
-      }
-      break;
-    }
-    case 3: // Ergebnis prüfen
-    {
-      if (abs(zcd_cnt1 - (2 * opto_cnt1)) < 8) // es müssen etwa doppelt so viele Flanken an ZCD aufgetreten sein wie am Optokoppler
-        return;                                // wenn ja, OK
-      while (1)                                // wenn nein, WR sperren und rote LED langsam blinken da Relais möglicherweise fehlerhaft
-      {
-        gpio_bit_reset(GPIOB, GPIO_PIN_13); // rot aus
-        delay(1000);
-        gpio_bit_set(GPIOB, GPIO_PIN_13); // rot ein
-        delay(1000);
-      }
-    }
-    default:
-    {
-      while (1)
-      {
-      }
-    }
-    }
-  }
-}
-#endif
