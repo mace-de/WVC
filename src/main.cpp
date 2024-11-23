@@ -19,7 +19,7 @@ const uint32_t minimalspannung_abs = 1576 * Mittel_aus; //= etwa 26V darunter ka
                                                         // an den Scheitelpunkten nicht ins Netz einspeisen (61) = 1V
 const uint32_t maximalstrom_abs = 2200 * Mittel_aus;    //= etwa 15A darüber wird der WR wohl verglühen (148) = 1A
 
-volatile uint32_t U_out = 0, Synccounter = 0, abregelwert = 0, cnt_Haupttakt = 0, gu = 0, gi = 0, gun = 0, gt = 0, gumpp = 0, guout = 30;
+volatile uint32_t U_out = 0, Synccounter = 0, abregelwert = 0, cnt_Haupttakt = 0, gu = 0, gi = 0, gun = 0, gt = 0, gumpp = 0;
 volatile uint8_t counter = 0;
 volatile bool Flag_Haupttakt = 0, Sync = 0;
 volatile float energie_tag = 0;
@@ -119,7 +119,7 @@ void tsk_main(void *param)
           gumpp = 0;
           if (Sync && flashdata.mainswitch && !vlock)
           {
-            if (startverz < (flashdata.startverzoegerung*1000) / TaktHauptschleife)
+            if (startverz < (flashdata.startverzoegerung * 1000) / TaktHauptschleife)
             { // wenn startklar noch 30 Sekunden warten
               startverz++;
               gpio_bit_reset(GPIOB, GPIO_PIN_12);                                                       // blau aus
@@ -171,14 +171,14 @@ void tsk_main(void *param)
             else
             {
               teilbereichsuche = false;
-              f_U_out = 0;
+              f_U_out *= 0.8;
               Schritt = 3;
             }
           }
           else
           {
             teilbereichsuche = false;
-            f_U_out = 0;
+            f_U_out *= 0.8;
             Schritt = 3;
           }
           break;
@@ -203,7 +203,7 @@ void tsk_main(void *param)
           }
           else
           {
-            f_U_out = f_U_out + ((float)spannung - (float)spannung_MPP) / (Mittel_aus * 61 * guout); // Augangsstrom regeln
+            f_U_out = f_U_out + ((float)spannung - (float)spannung_MPP) / (Mittel_aus * 61 * (80 - (strom / (43 * Mittel_aus)))); // Augangsstrom regeln
           }
           if (f_U_out < 0.0)
             f_U_out = 0.0;
@@ -276,7 +276,9 @@ void tsk_com_send(void *param)
     Serial.print(TIMER_CAR(TIMER13) / 112.5); // Ausgabe gemessene Netzfrequenz
     Serial.print(",Emission,");
     Serial.print(gumpp / 970.0, 2); // Ausgabe MPP-Spannung im CO2 Datenfeld
-    Serial.print(",Time,30,P_adj,");
+    Serial.print(",Time,");
+    Serial.print(flashdata.startverzoegerung); // Ausgabe Zeit Startverzögerung
+    Serial.print(",P_adj,");
     Serial.print(flashdata.kalibrirung); // Ausgabe aktueller Kalibrierungswert
     Serial.println(",TEMP_SET,64");
     Serial.println();
@@ -326,10 +328,10 @@ void tsk_com_rcv(void *param)
             {
               ch[i] = Serial.read();
             }
-            if (ch[5] == 'S')               //+ILOPDATA=ICA,PowerSwitch,0<\r><\n>
-              step = 4;                     //                   ^
-            if (ch[5] == '_')               //+ILOPDATA=ICA,Power_adjust,100<\r><\n>
-              step = 8;                     //                   ^
+            if (ch[5] == 'S') //+ILOPDATA=ICA,PowerSwitch,0<\r><\n>
+              step = 4;       //                   ^
+            if (ch[5] == '_') //+ILOPDATA=ICA,Power_adjust,100<\r><\n>
+              step = 8;       //                   ^
           }
           if (ch[0] == 'T' && ch[1] == 'i') //+ILOPDATA=ICA,Time,40<\r><\n>
             step = 5;                       //              ^^
@@ -364,6 +366,17 @@ void tsk_com_rcv(void *param)
             flashdata.mainswitch = 0;
           if (ch[0] == '1')
             flashdata.mainswitch = 1;
+          myflash.write(0, (uint8_t *)&flashdata, sizeof(flashdata));
+          myflash.commit();
+          step = 0;
+        }
+        break;
+      }
+      case 5: // ADC Kalibrierung
+      {
+        if (Serial.read() == ',')
+        {
+          flashdata.startverzoegerung = Serial.parseInt();
           myflash.write(0, (uint8_t *)&flashdata, sizeof(flashdata));
           myflash.commit();
           step = 0;
@@ -574,7 +587,7 @@ void relaischeck()
     }
     case 3: // Ergebnis prüfen
     {
-      if (abs(zcd_cnt1 - (2 * opto_cnt1)) < 5) // es müssen etwa doppelt so viele Flanken an ZCD aufgetreten sein wie am Optokoppler
+      if (abs(zcd_cnt1 - (2 * opto_cnt1)) < 8) // es müssen etwa doppelt so viele Flanken an ZCD aufgetreten sein wie am Optokoppler
         return;                                // wenn ja, OK
       while (1)                                // wenn nein, WR sperren und rote LED langsam blinken da Relais möglicherweise fehlerhaft
       {
