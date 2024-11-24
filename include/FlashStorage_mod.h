@@ -27,6 +27,8 @@
  * POSSIBILITY OF SUCH DAMAGE.
  *
  * File modified for small buffer to save SRAM and correct page size
+ * and added a procedure to fill a flash page with data and erase it only when page
+ * is full to save Flash erase cycles
  */
 
 #pragma once
@@ -45,18 +47,18 @@ private:
     static constexpr uint32_t fmc_base_address = 0x08000000;
     static constexpr uint32_t fmc_end_address = fmc_base_address + _fmc_end;
     static constexpr uint32_t data_area_start = fmc_end_address - 1024;
-    static uint8_t *offset = NULL;
+    uint32_t offset = 0;
 
 public:
-    void *begin()
+    boolean begin()
     {
-
+        uint8_t buffer_i[_storage_size], *src;
         uint32_t cnt;
         fmc_unlock();
 
         do
         {
-            src = (uint8_t *)data_area_start + offset;
+            src = (uint8_t *)(data_area_start + offset);
             cnt = 0;
             for (uint32_t i = 0; i < _storage_size; i++)
             {
@@ -64,7 +66,22 @@ public:
                 if (src[i] == 0xff)
                     cnt++;
             }
-        } while ((cnt == _storage_size) || (data_area_start + offset == fmc_end_address));
+            offset += _storage_size;
+        } while ((cnt != _storage_size) && ((data_area_start + offset) < fmc_end_address));
+        offset -= _storage_size;
+        if ((offset != 0) && ((data_area_start + offset + _storage_size) < fmc_end_address))
+            offset -= _storage_size;
+        src = (uint8_t *)data_area_start + offset;
+        for (uint32_t i = 0; i < _storage_size; i++)
+        {
+            buffer_[i] = src[i];
+        }
+        if (offset != 0)
+        {
+            offset += _storage_size;
+            return 1;
+        }
+        return 0;
     }
 
     uint32_t length()
@@ -104,7 +121,12 @@ public:
     {
         uint32_t address = data_area_start;
         uint32_t *ptrs = (uint32_t *)buffer_;
-        fmc_page_erase(address);
+        if (data_area_start + offset >= fmc_end_address)
+        {
+            fmc_page_erase(address);
+            offset = 0;
+        }
+        address = data_area_start + offset;
         uint32_t word_count = _storage_size / 4;
         uint32_t i = 0;
         do
@@ -112,5 +134,6 @@ public:
             fmc_word_program(address, *ptrs++);
             address += 4U;
         } while (++i < word_count);
+        offset += _storage_size;
     }
 };

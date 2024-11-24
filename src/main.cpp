@@ -42,7 +42,7 @@ void tsk_main(void *param)
   static uint32_t leistung_MPP = 0, maximalstrom_la = 0, store_enable_counter = 0;
   static uint32_t spannung = 0, strom = 0, netzspannung = 0, netzspannung_a[Mittel_aus], spannung_a[Mittel_aus], strom_a[Mittel_aus], temperatur = 0;
   uint32_t leistung;
-  float f_U_out=0;
+  float f_U_out = 0.0;
   while (1)
   {
     // sobald die Netzsyncronität verloren geht Wandler Stom abschalten und in den Warteschritt gehen
@@ -486,18 +486,19 @@ PWM mypwm(PB8);
 HardwareTimer mytim(TIMER13);
 void setup()
 {
-  myflash.begin();
-  myflash.read(0, (uint8_t *)&flashdata, sizeof(flashdata)); // Gespeicherte Daten aus dem Flash lesen...
-  if ((flashdata.leistungsanforderung > 100) || (flashdata.mainswitch > 1) || (flashdata.kalibrirung > 100))
-  { // ...und auf plausibilität prüfen. Wenn was nicht passt, auf standard Werte setzen.
+  if (myflash.begin())
+  {
+    myflash.read(0, (uint8_t *)&flashdata, sizeof(flashdata)); // Gespeicherte Daten aus dem Flash lesen
+  }
+  else
+  { // Wenn Flash leer, auf standard Werte setzen.
     flashdata.energie_gesamt = 0.0;
     flashdata.leistungsanforderung = 100;
     flashdata.mainswitch = 1;
     flashdata.kalibrirung = 50;
+    flashdata.startverzoegerung = 30;
   }
   Serial.begin(115200);
-  delay(4000); // Dem WLAN Modul etwas Zeit zum starten geben
-
   // I/O-Pins einstellen
   pinMode(PB13, OUTPUT);       // LED-rot
   pinMode(PB12, OUTPUT);       // LED-blau
