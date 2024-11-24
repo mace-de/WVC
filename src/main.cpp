@@ -114,6 +114,7 @@ void tsk_main(void *param)
       temperatur = temperatur < TEMP_LUT_OFFSET ? 0 : temperatur - TEMP_LUT_OFFSET;
       temperatur = temperatur > TEMP_LUT_END ? TEMP_LUT_END : temperatur;
       temperatur = temparray[temperatur];
+      gt=temperatur;
       maximalstrom = (maximalstrom_abs * (225 - abregelwert)) / 225;               // aktuellen Maximalstrom aus maximalem Wechselrichterstrom und dem Abregelwert berechnen
       maximalstrom_la = (maximalstrom_abs * flashdata.leistungsanforderung) / 100; // Maximalstrom über die App begrenzen
       if (maximalstrom > maximalstrom_la)
