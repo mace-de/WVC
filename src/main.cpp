@@ -9,6 +9,7 @@
 #include "myadc.h"
 #include "lut.h"
 #include "relaycheck.h"
+#include "Temp_lut.h"
 
 #define RELAYCHECK                          // Testfunktion Netzrelais für Nutzung muss R88 mit 10k Ohm überbrückt werden
 #define Mittel_aus 16                       // gleitendens Mittel aus X Werten (Maximal 63 sonst Überlauf)
@@ -21,7 +22,6 @@ const uint32_t minimalspannung_abs = 1576 * Mittel_aus; //= etwa 26V darunter ka
 const uint32_t maximalstrom_abs = 2200 * Mittel_aus;    //= etwa 15A darüber wird der WR wohl verglühen (148) = 1A
 
 volatile uint32_t U_out = 0, Synccounter = 0, abregelwert = 0, cnt_Haupttakt = 0, gu = 0, gi = 0, gun = 0, gt = 0, gumpp = 0, ggeschw = 8;
-volatile uint8_t counter = 0;
 volatile bool Flag_Haupttakt = 0, Sync = 0;
 volatile float energie_tag = 0;
 volatile struct s_flashdata
@@ -42,7 +42,7 @@ void tsk_main(void *param)
   static uint32_t leistung_MPP = 0, maximalstrom_la = 0, store_enable_counter = 0;
   static uint32_t spannung = 0, strom = 0, netzspannung = 0, netzspannung_a[Mittel_aus], spannung_a[Mittel_aus], strom_a[Mittel_aus], temperatur = 0;
   uint32_t leistung;
-  float f_U_out;
+  float f_U_out=0;
   while (1)
   {
     // sobald die Netzsyncronität verloren geht Wandler Stom abschalten und in den Warteschritt gehen
@@ -111,7 +111,9 @@ void tsk_main(void *param)
       store_enable_counter++;
       Flag_Haupttakt = false;
       temperatur = adc_channel_sample(ADC_CHANNEL_8); // Temperatur im Gehäuse messen
-      gt = temperatur;
+      temperatur = temperatur < TEMP_LUT_OFFSET ? 0 : temperatur - TEMP_LUT_OFFSET;
+      temperatur = temperatur > TEMP_LUT_END ? TEMP_LUT_END : temperatur;
+      temperatur = temparray[temperatur];
       maximalstrom = (maximalstrom_abs * (225 - abregelwert)) / 225;               // aktuellen Maximalstrom aus maximalem Wechselrichterstrom und dem Abregelwert berechnen
       maximalstrom_la = (maximalstrom_abs * flashdata.leistungsanforderung) / 100; // Maximalstrom über die App begrenzen
       if (maximalstrom > maximalstrom_la)
@@ -201,22 +203,16 @@ void tsk_main(void *param)
         // und die Temperatur auf der platine nicht über 70°C steigt
         else
         {
-          if ((strom > maximalstrom) || (temperatur < 550)) // 70°C
+          if ((strom > maximalstrom) || (temperatur > 7000)) // 70°C
           {
             f_U_out--; // Ausgangsstrom reduzieren
           }
           else
           {
-            f_U_out = f_U_out + ((float)spannung - (float)spannung_MPP) / (Mittel_aus * 61 * ggeschw * 5); //(80 - (strom / (43 * Mittel_aus)))); // Augangsstrom regeln
+            f_U_out = f_U_out + ((float)spannung - (float)spannung_MPP) / (Mittel_aus * 61 * ggeschw * 5); // Augangsstrom regeln
           }
-          if (f_U_out < 0.0)
-          {
-            f_U_out = 0.0;
-          }
-          if (f_U_out > 1023.0)
-          {
-            f_U_out = 1023.0;
-          }
+          f_U_out = f_U_out < 0.0 ? 0.0 : f_U_out;
+          f_U_out = f_U_out > 1023 ? 1023 : f_U_out;
         }
         Langzeitzaehler++;
         // alle 10 min gucken ob sich die MPP Spannung durch änderung der Zellentemperatur verschoben hat
@@ -251,7 +247,6 @@ void tsk_com_send(void *param)
   static uint32_t lastwaketime;
   while (1)
   {
-    float temperatur = ((double)(gt / -658.6337) * (gt / -658.6337) * (gt / -658.6337)) + ((gt * gt) / 41895.521) - (gt * 0.0728544965) + 103.9;
     float leistung = (gu * gi) / 2678779.07;
     energie_tag += leistung;
     flashdata.energie_gesamt += leistung;
@@ -269,7 +264,7 @@ void tsk_com_send(void *param)
     Serial.print(",Out_Power,");
     Serial.print(leistung, 1); // Ausgabe berechnete Ausgangsleistung
     Serial.print(",Temperature,");
-    Serial.print(temperatur, 1); // Ausgabe gemessene Temperatur auf Platine
+    Serial.print(gt / 100.0, 1); // Ausgabe gemessene Temperatur auf Platine
     Serial.print(",Power_adjustment,");
     Serial.print(flashdata.leistungsanforderung); // Ausgabe aktuelle Leistungsanforderung
     Serial.print(",Energy,");
@@ -480,6 +475,7 @@ void t13ov_int()
   Synccounter++;
   if (Synccounter > 258) // wenn Synccounter überläuft = kein Zerocross = kein Netz
   {
+    Synccounter--;
     Sync = 0;
     gpio_bit_reset(GPIOC, GPIO_PIN_13); // Netzrelais aus
     gpio_bit_set(GPIOA, GPIO_PIN_12);   // Regler aus

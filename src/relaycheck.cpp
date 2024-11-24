@@ -1,7 +1,7 @@
 #include <Arduino.h>
 void relaycheck()
 {
-  boolean last_zcd, last_opto, zcd_temp, opto_temp;
+  boolean last_zcd=0, last_opto=0, zcd_temp, opto_temp;
   uint32_t zcd_cnt2, opto_cnt2, zcd_millis, opto_millis, schritt = 0;
   int32_t zcd_cnt1 = 0, opto_cnt1 = 0;
 
