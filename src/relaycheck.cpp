@@ -1,8 +1,8 @@
 #include <Arduino.h>
 void relaycheck()
 {
-  boolean last_zcd=0, last_opto=0, zcd_temp, opto_temp;
-  uint32_t zcd_cnt2, opto_cnt2, zcd_millis, opto_millis, schritt = 0;
+  boolean last_zcd = 0, last_opto = 0, zcd_temp, opto_temp;
+  uint32_t zcd_cnt2, opto_cnt2, zcd_millis, opto_millis, schritt = 0, repeat = 0;
   int32_t zcd_cnt1 = 0, opto_cnt1 = 0;
 
   while (1)
@@ -54,7 +54,14 @@ void relaycheck()
     {
       if (abs(zcd_cnt1 - (2 * opto_cnt1)) < 8) // es müssen etwa doppelt so viele Flanken an ZCD aufgetreten sein wie am Optokoppler
         return;                                // wenn ja, OK
-      while (1)                                // wenn nein, WR sperren und rote LED langsam blinken da Relais möglicherweise fehlerhaft
+      if (repeat < 1)                          // wenn nein, zweiter Versuch
+      {
+        delay(500);
+        schritt = 0;
+        repeat++;
+        break;
+      }
+      while (1) // wenn zweiter Versuch auch fehlschlägt, WR sperren und rote LED langsam blinken da Relais möglicherweise fehlerhaft
       {
         gpio_bit_reset(GPIOB, GPIO_PIN_13); // rot aus
         delay(1000);

@@ -21,13 +21,13 @@ const uint32_t minimalspannung_abs = 1576 * Mittel_aus; //= etwa 26V darunter ka
                                                         // an den Scheitelpunkten nicht ins Netz einspeisen (61) = 1V
 const uint32_t maximalstrom_abs = 2200 * Mittel_aus;    //= etwa 15A darüber wird der WR wohl verglühen (148) = 1A
 
-volatile uint32_t U_out = 0, Synccounter = 0, abregelwert = 0, cnt_Haupttakt = 0, gu = 0, gi = 0, gun = 0, gt = 0, gumpp = 0, ggeschw = 8;
+volatile uint32_t U_out = 0, Synccounter = 0, abregelwert = 0, cnt_Haupttakt = 0, gu = 0, gi = 0, gun = 0, gt = 0, gumpp = 0;
 volatile bool Flag_Haupttakt = 0, Sync = 0;
 volatile float energie_tag = 0;
 volatile struct s_flashdata
 {
   float energie_gesamt;
-  uint8_t mainswitch, leistungsanforderung, kalibrirung, startverzoegerung;
+  uint8_t mainswitch, leistungsanforderung, kalibrirung, startverzoegerung, reglergeschwindigkeit;
 } flashdata;
 
 TaskHandle_t hdl1, hdl2, hdl3;
@@ -37,7 +37,7 @@ FlashStorage<sizeof(flashdata)> myflash;
 void tsk_main(void *param)
 {
   static uint8_t Schritt = 1, cnt_a = 0;
-  static bool teilbereichsuche = false, vlock = false;
+  static bool teilbereichsuche = false, vlock = true;
   static uint32_t spannung_MPP = 0, Langzeitzaehler = 0, minimalspannung = 0, maximalspannung = 0, maximalstrom = 0, startverz = 0;
   static uint32_t leistung_MPP = 0, maximalstrom_la = 0, store_enable_counter = 0;
   static uint32_t spannung = 0, strom = 0, netzspannung = 0, netzspannung_a[Mittel_aus], spannung_a[Mittel_aus], strom_a[Mittel_aus], temperatur = 0;
@@ -100,7 +100,7 @@ void tsk_main(void *param)
         leistung = spannung * strom;
         if (leistung > leistung_MPP)
         {
-          spannung_MPP = spannung;
+          spannung_MPP = spannung < minimalspannung_abs ? minimalspannung_abs : spannung;
           leistung_MPP = leistung;
         }
       }
@@ -114,7 +114,7 @@ void tsk_main(void *param)
       temperatur = temperatur < TEMP_LUT_OFFSET ? 0 : temperatur - TEMP_LUT_OFFSET;
       temperatur = temperatur > TEMP_LUT_END ? TEMP_LUT_END : temperatur;
       temperatur = temparray[temperatur];
-      gt=temperatur;
+      gt = temperatur;
       maximalstrom = (maximalstrom_abs * (225 - abregelwert)) / 225;               // aktuellen Maximalstrom aus maximalem Wechselrichterstrom und dem Abregelwert berechnen
       maximalstrom_la = (maximalstrom_abs * flashdata.leistungsanforderung) / 100; // Maximalstrom über die App begrenzen
       if (maximalstrom > maximalstrom_la)
@@ -173,7 +173,7 @@ void tsk_main(void *param)
           {
             if (f_U_out < 1023)
             {
-              f_U_out++;
+              f_U_out += flashdata.reglergeschwindigkeit / 12.0;
             }
             else
             {
@@ -210,7 +210,7 @@ void tsk_main(void *param)
           }
           else
           {
-            f_U_out = f_U_out + ((float)spannung - (float)spannung_MPP) / (Mittel_aus * 61 * ggeschw * 5); // Augangsstrom regeln
+            f_U_out = f_U_out + ((float)spannung - (float)spannung_MPP) / (Mittel_aus * 61 * flashdata.reglergeschwindigkeit * 5); // Augangsstrom regeln
           }
           f_U_out = f_U_out < 0.0 ? 0.0 : f_U_out;
           f_U_out = f_U_out > 1023 ? 1023 : f_U_out;
@@ -259,9 +259,9 @@ void tsk_com_send(void *param)
     Serial.print(",PV_Power,");
     Serial.print((gi * gu) / (2375.0 * 970.0), 1); // Ausgabe Solarleistung in W
     Serial.print(",AC_Volt,");
-    Serial.print(gun / 4.186, 1); // Ausgabe Netzspannung
+    Serial.print(gun / 3.95, 1); // Ausgabe Netzspannung
     Serial.print(",AC_Current,");
-    Serial.print(((gu * gi) / 2678779.07) / (gun / 4.186)); // Ausgabe berechneter Ausgangsstrom in A Wirkungsgrad ~86%
+    Serial.print(((gu * gi) / 2678779.07) / (gun / 3.95)); // Ausgabe berechneter Ausgangsstrom in A Wirkungsgrad ~86%
     Serial.print(",Out_Power,");
     Serial.print(leistung, 1); // Ausgabe berechnete Ausgangsleistung
     Serial.print(",Temperature,");
@@ -269,7 +269,7 @@ void tsk_com_send(void *param)
     Serial.print(",Power_adjustment,");
     Serial.print(flashdata.leistungsanforderung); // Ausgabe aktuelle Leistungsanforderung
     Serial.print(",Energy,");
-    Serial.println(flashdata.energie_gesamt / 654545.4, 2); // Ausgabe gemessene Netzfrequenz
+    Serial.println(flashdata.energie_gesamt / 654545.4, 2); // Ausgabe Gesamtenergiemenge
     Serial.println();
     vTaskDelay(500);
     Serial.print("AT+SENDICA=property,PowerSwitch,");
@@ -277,7 +277,7 @@ void tsk_com_send(void *param)
     Serial.print(",Day_Energy,");
     Serial.print(energie_tag / 654545.4, 2); // Ausgabe berechnete Energie seit einschalten
     Serial.print(",Plant,");
-    Serial.print(TIMER_CAR(TIMER13) / 112.5, 2); // Ausgabe gemessene Netzfrequenz
+    Serial.print(U_out / 10.0, 1); // Ausgabe MPP-Regler Ausgang in % oder TIMER_CAR(TIMER13) / 112.5, 2); // Ausgabe gemessene Netzfrequenz
     Serial.print(",Emission,");
     Serial.print(gumpp / 970.0, 2); // Ausgabe MPP-Spannung im CO2 Datenfeld
     Serial.print(",Time,");
@@ -377,7 +377,7 @@ void tsk_com_rcv(void *param)
         }
         break;
       }
-      case 5: // ADC Kalibrierung
+      case 5: // Startverzögerung
       {
         if (Serial.read() == ',')
         {
@@ -392,10 +392,9 @@ void tsk_com_rcv(void *param)
       {
         if (Serial.read() == ',')
         {
-          ggeschw = Serial.parseInt() + 1;
-          // flashdata.startverzoegerung = Serial.parseInt();
-          // myflash.write(0, (uint8_t *)&flashdata, sizeof(flashdata));
-          // myflash.commit();
+          flashdata.reglergeschwindigkeit = Serial.parseInt() + 1;
+          myflash.write(0, (uint8_t *)&flashdata, sizeof(flashdata));
+          myflash.commit();
           step = 0;
         }
         break;
@@ -498,6 +497,7 @@ void setup()
     flashdata.mainswitch = 1;
     flashdata.kalibrirung = 50;
     flashdata.startverzoegerung = 30;
+    flashdata.reglergeschwindigkeit = 8;
   }
   Serial.begin(115200);
   // I/O-Pins einstellen
