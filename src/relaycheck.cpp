@@ -24,6 +24,7 @@ void relaycheck()
     {
     case 0:
     {
+      gpio_bit_set(GPIOB, GPIO_PIN_11); // Relais 115V/230V Ein
       waitcounter = 0;
       if (zcd_cnt1 > 100) // warten bis Netz vorhanden
       {
@@ -50,6 +51,7 @@ void relaycheck()
       {
         schritt = 3;
         gpio_bit_reset(GPIOC, GPIO_PIN_13); // Netzrelais aus
+        gpio_bit_reset(GPIOB, GPIO_PIN_11); // Relais 115V/230V Aus
       }
       break;
     }

@@ -233,7 +233,7 @@ void tsk_main(void *param)
         // bei plötzlicher Verschattung leistung schnell reduzieren (Spannung fällt unter 24V)
         if (spannung < (minimalspannung_abs - 40 * Mittel_aus))
         {
-          f_U_out = f_U_out / 2;
+          f_U_out = f_U_out * 0.8;
         }
         // ansonsten Wandlerstrom kontinuirlich so einstellen dass die Zellen mit der in Schritt 2 gefundenen MPP Spannung laufen
         // und die Temperatur auf der platine nicht über 70°C steigt
