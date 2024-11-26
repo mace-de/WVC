@@ -1,9 +1,10 @@
 #include <Arduino.h>
+#define TIMETOWAIT 1 // Minuten Wartezeit zwischen den Relaistests. Da der WR am früh evtl noch nicht genug Energie hat das Relais korrekt zu schalten
 void relaycheck()
 {
   boolean last_zcd = 0, last_opto = 0, zcd_temp, opto_temp;
-  uint32_t zcd_cnt2, opto_cnt2, zcd_millis, opto_millis, schritt = 0, repeat = 0;
-  int32_t zcd_cnt1 = 0, opto_cnt1 = 0;
+  uint32_t zcd_millis, opto_millis, schritt = 0, repeat = 0;
+  int32_t zcd_cnt1 = 0, opto_cnt1 = 0, waitcounter = 0;
 
   while (1)
   {
@@ -23,10 +24,12 @@ void relaycheck()
     {
     case 0:
     {
+      waitcounter = 0;
       if (zcd_cnt1 > 100) // warten bis Netz vorhanden
       {
         schritt = 1;
         zcd_cnt1 = 0;
+        opto_cnt1 = 0;
         zcd_millis = millis() + 2000;
         opto_millis = millis() + 1000;
       }
@@ -61,13 +64,17 @@ void relaycheck()
         repeat++;
         break;
       }
-      while (1) // wenn zweiter Versuch auch fehlschlägt, WR sperren und rote LED langsam blinken da Relais möglicherweise fehlerhaft
+      while (waitcounter < TIMETOWAIT * 30) // wenn zweiter Versuch auch fehlschlägt, WR sperren und rote LED langsam blinken da Relais möglicherweise fehlerhaft
       {
         gpio_bit_reset(GPIOB, GPIO_PIN_13); // rot aus
         delay(1000);
         gpio_bit_set(GPIOB, GPIO_PIN_13); // rot ein
         delay(1000);
+        waitcounter++;
       }
+      repeat = 0;
+      schritt = 0;
+      break;
     }
     default:
     {
