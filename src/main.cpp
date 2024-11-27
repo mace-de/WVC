@@ -133,6 +133,7 @@ void tsk_main(void *param)
         gpio_bit_reset(GPIOB, GPIO_PIN_11); // Relais 115V/230V Aus
         gpio_bit_reset(GPIOC, GPIO_PIN_13); // Netzrelais aus
         gpio_bit_set(GPIOA, GPIO_PIN_12);   // Regler aus
+        f_U_out = 0.0;
         if (startverz < 600000 / TaktHauptschleife)
         {
           startverz++;
@@ -149,7 +150,6 @@ void tsk_main(void *param)
         }
         else
         {
-          gpio_bit_set(GPIOB, GPIO_PIN_11); // Relais 115V/230V Ein
           startverz = 0;
           Schritt = 1;
         }
@@ -159,6 +159,9 @@ void tsk_main(void *param)
       case 1: // Warteschritt
         // auf Netzsyncronität warten
         {
+          gpio_bit_set(GPIOB, GPIO_PIN_11);   // Relais 115V/230V Ein
+          gpio_bit_set(GPIOA, GPIO_PIN_12);   // Regler aus
+          f_U_out = 0.0;
           if (Sync && flashdata.mainswitch) // alles ok?
           {
             if (startverz < (flashdata.startverzoegerung * 1000) / TaktHauptschleife)
@@ -175,7 +178,6 @@ void tsk_main(void *param)
               maximalspannung = minimalspannung_abs;
               Langzeitzaehler = 0;
               leistung_MPP = 0;
-              f_U_out = 0;
               Schritt = 2;
               startverz = 0;
             }
