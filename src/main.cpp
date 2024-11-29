@@ -143,7 +143,7 @@ void tsk_main(void *param)
           {
             cnt_blink = 0;
             gpio_bit_reset(GPIOB, GPIO_PIN_12);                                                       // blau aus
-            gpio_bit_write(GPIOB, GPIO_PIN_13, (FlagStatus)!gpio_output_bit_get(GPIOB, GPIO_PIN_13)); // rot blinkt
+            gpio_bit_write(GPIOB, GPIO_PIN_13, (FlagStatus)!gpio_output_bit_get(GPIOB, GPIO_PIN_13)); // rot blinkt langsam
           }
         }
         else

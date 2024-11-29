@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include "myadc.h"
 #define TIMETOWAIT 1 // Minuten Wartezeit zwischen den Relaistests. Da der WR am früh evtl noch nicht genug Energie hat das Relais korrekt zu schalten
 void relaycheck()
 {
@@ -10,6 +11,11 @@ void relaycheck()
   {
     zcd_temp = gpio_input_bit_get(GPIOA, GPIO_PIN_6);
     opto_temp = gpio_input_bit_get(GPIOC, GPIO_PIN_14);
+    if (adc_channel_sample(ADC_CHANNEL_7) < 1300) // wenn die PV-Spannung hier schon einbricht, dann ist zu wenig Licht
+                                                  // zum starten. Dann warten und später nochmal versuchen (970 (61) = 1V)
+    {
+      schritt = 4;
+    }
     if (zcd_temp == !last_zcd) // ZCD Pin Flanken zählen
     {
       last_zcd = zcd_temp;
@@ -25,7 +31,7 @@ void relaycheck()
     case 0:
     {
       gpio_bit_set(GPIOB, GPIO_PIN_11); // Relais 115V/230V Ein
-      waitcounter = 0;
+
       if (zcd_cnt1 > 100) // warten bis Netz vorhanden
       {
         schritt = 1;
@@ -66,7 +72,16 @@ void relaycheck()
         repeat++;
         break;
       }
-      while (waitcounter < TIMETOWAIT * 30) // wenn zweiter Versuch auch fehlschlägt, WR sperren und rote LED langsam blinken da Relais möglicherweise fehlerhaft
+      repeat = 0;
+      schritt = 4; // wenn zweiter Versuch auch fehlschlägt -> Warteschritt
+      break;
+    }
+    case 4: // Warteschritt
+    {
+      gpio_bit_reset(GPIOC, GPIO_PIN_13); // Netzrelais aus
+      gpio_bit_reset(GPIOB, GPIO_PIN_11); // Relais 115V/230V Aus
+      waitcounter = 0;
+      while (waitcounter < TIMETOWAIT * 30)
       {
         gpio_bit_reset(GPIOB, GPIO_PIN_13); // rot aus
         delay(1000);
