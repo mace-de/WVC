@@ -37,9 +37,8 @@ FlashStorage<sizeof(flashdata)> myflash;
 void tsk_main(void *param)
 {
   static uint8_t Schritt = 1, cnt_a = 0, cnt_blink = 0, cnt_netz = 0;
-  static bool teilbereichsuche = false;
-  static uint32_t spannung_MPP = 0, Langzeitzaehler = 0, minimalspannung = 0, maximalspannung = 0, maximalstrom = 0, startverz = 0;
-  static uint32_t leistung_MPP = 0, maximalstrom_la = 0, store_enable_counter = 0;
+  static uint32_t spannung_MPP = 0, Langzeitzaehler = 0, minimalspannung = 0, maximalstrom = 0, startverz = 0;
+  static uint32_t leistung_MPP = 0, maximalstrom_la = 0;
   static uint32_t spannung = 0, strom = 0, netzspannung = 0, netzspannung_a[Mittel_aus], spannung_a[Mittel_aus], strom_a[Mittel_aus], temperatur = 0;
   uint32_t leistung;
   float f_U_out = 0.0;
@@ -105,7 +104,7 @@ void tsk_main(void *param)
       {
         cnt_netz = 0;
       }
-      if (spannung < Abschaltspannung) // wenn PV-Spannung unter Abschaltspannung dann neu hochfahren
+      if ((spannung < Abschaltspannung) && (Schritt == 3)) // wenn PV-Spannung im Regelbetrieb unter Abschaltspannung dann neu hochfahren
       {
         Schritt = 1;
         startverz = 0;
@@ -115,7 +114,6 @@ void tsk_main(void *param)
         Schritt = 0;
         startverz = 0;
       }
-      store_enable_counter++;
       Flag_Haupttakt = false;
       temperatur = adc_channel_sample(ADC_CHANNEL_8); // Temperatur im Gehäuse messen
       temperatur = temperatur < TEMP_LUT_OFFSET ? 0 : temperatur - TEMP_LUT_OFFSET;
@@ -159,8 +157,8 @@ void tsk_main(void *param)
       case 1: // Warteschritt
         // auf Netzsyncronität warten
         {
-          gpio_bit_set(GPIOB, GPIO_PIN_11);   // Relais 115V/230V Ein
-          gpio_bit_set(GPIOA, GPIO_PIN_12);   // Regler aus
+          gpio_bit_set(GPIOB, GPIO_PIN_11); // Relais 115V/230V Ein
+          gpio_bit_set(GPIOA, GPIO_PIN_12); // Regler aus
           f_U_out = 0.0;
           if (Sync && flashdata.mainswitch) // alles ok?
           {
@@ -175,7 +173,6 @@ void tsk_main(void *param)
               gpio_bit_set(GPIOC, GPIO_PIN_13);   // Netzrelais ein
               gpio_bit_reset(GPIOA, GPIO_PIN_12); // Regler ein
               minimalspannung = minimalspannung_abs;
-              maximalspannung = minimalspannung_abs;
               Langzeitzaehler = 0;
               leistung_MPP = 0;
               Schritt = 2;
@@ -196,32 +193,21 @@ void tsk_main(void *param)
         {
           gpio_bit_reset(GPIOB, GPIO_PIN_13);                                                       // rot aus
           gpio_bit_write(GPIOB, GPIO_PIN_12, (FlagStatus)!gpio_output_bit_get(GPIOB, GPIO_PIN_12)); // blau blinkt
-          if (maximalspannung < spannung)
-            maximalspannung = spannung;
-          if (teilbereichsuche)
-          {
-            if ((maximalspannung - (maximalspannung >> 2)) > minimalspannung)
-              minimalspannung = (maximalspannung - (maximalspannung >> 2));
-          }
-          else
-            minimalspannung = minimalspannung_abs;
-
+          minimalspannung = minimalspannung < minimalspannung_abs ? minimalspannung_abs : minimalspannung;
           if ((spannung > minimalspannung) && (strom < maximalstrom))
           {
             if (f_U_out < 1023)
             {
-              f_U_out += flashdata.reglergeschwindigkeit / 12.0;
+              f_U_out += (2.0 / flashdata.reglergeschwindigkeit);
             }
             else
             {
-              teilbereichsuche = false;
               f_U_out *= 0.8;
               Schritt = 3;
             }
           }
           else
           {
-            teilbereichsuche = false;
             f_U_out *= 0.8;
             Schritt = 3;
           }
@@ -235,7 +221,7 @@ void tsk_main(void *param)
         // bei plötzlicher Verschattung leistung schnell reduzieren (Spannung fällt unter 24V)
         if (spannung < (minimalspannung_abs - 40 * Mittel_aus))
         {
-          f_U_out = f_U_out * 0.8;
+          f_U_out *= 0.8;
         }
         // ansonsten Wandlerstrom kontinuirlich so einstellen dass die Zellen mit der in Schritt 2 gefundenen MPP Spannung laufen
         // und die Temperatur auf der platine nicht über 70°C steigt
@@ -243,7 +229,7 @@ void tsk_main(void *param)
         {
           if ((strom > maximalstrom) || (temperatur > 7000)) // 70°C
           {
-            f_U_out--; // Ausgangsstrom reduzieren
+            f_U_out *= 0.9; // Ausgangsstrom reduzieren
           }
           else
           {
@@ -258,8 +244,8 @@ void tsk_main(void *param)
         if ((Langzeitzaehler == 600000 / TaktHauptschleife) || (Langzeitzaehler == 1200000 / TaktHauptschleife))
         {
           leistung_MPP = 0;
-          f_U_out -= f_U_out / 4;
-          teilbereichsuche = true;
+          f_U_out *= 0.75;
+          minimalspannung = spannung_MPP - 300 * Mittel_aus; // suchen bis 5V unter aktueller MPP-Spannung
           Schritt = 2;
           Flash_flag = true;
         }
@@ -269,7 +255,8 @@ void tsk_main(void *param)
         {
           leistung_MPP = 0;
           Langzeitzaehler = 0;
-          f_U_out = f_U_out / 8;
+          minimalspannung = minimalspannung_abs; // suchen bis zur Minimalspannung
+          f_U_out *= 0.125;
           Schritt = 2;
           Flash_flag = true;
         }
@@ -561,7 +548,7 @@ void setup()
 #ifdef RELAYCHECK
   relaycheck(); // Netzrelais testen
 #endif
-  digitalWrite(PB11, 1);      // Relais 115V/230V immer auf 230V
+  digitalWrite(PB11, 1);      // Relais 115V/230V Ein
   Serial.println("AT+E=off"); // WLAN-Modul Echo aus
   delay(1000);
   // Timer für PWM und Haupttakt einstellen 72MHz/7/1024=10kHz PWM und 72MHz/256/5625=50Hz
