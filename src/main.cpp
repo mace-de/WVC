@@ -34,7 +34,7 @@ TaskHandle_t hdl1, hdl2, hdl3;
 HardwareSerial Serial(PB7, PB6, 0);
 FlashStorage<sizeof(flashdata)> myflash;
 
-void tsk_main(void *param)
+void tsk_main(void *param) // Hauppttask
 {
   static uint8_t Schritt = 1, cnt_a = 0, cnt_blink = 0, cnt_netz = 0;
   static uint32_t spannung_MPP = 0, Langzeitzaehler = 0, minimalspannung = 0, maximalstrom = 0, startverz = 0;
@@ -44,7 +44,7 @@ void tsk_main(void *param)
   float f_U_out = 0.0;
   while (1)
   {
-    // sobald die Netzsyncronität verloren geht Wandler Stom abschalten und in den Warteschritt gehen
+    // sobald die Netzsyncronität verloren geht oder der Ausschaltbefehl von der App kommt Wandler Stom abschalten und in den Warteschritt gehen
     if (!Sync || !flashdata.mainswitch)
     {
       Schritt = 1;
@@ -56,7 +56,9 @@ void tsk_main(void *param)
     if (Flag_Haupttakt == false)
     {
       if (cnt_a > Mittel_aus - 1)
+      {
         cnt_a = 0;
+      }
       spannung -= spannung_a[cnt_a];
       int32_t t_spannung = (adc_channel_sample(ADC_CHANNEL_7) * 50) / flashdata.kalibrirung; // 970 (61) = 1V
       spannung_a[cnt_a] = t_spannung;
@@ -82,6 +84,10 @@ void tsk_main(void *param)
           spannung_MPP = spannung < minimalspannung_abs ? minimalspannung_abs : spannung;
           leistung_MPP = leistung;
         }
+      }
+      else
+      {
+        leistung_MPP = 0;
       }
     }
     // Haupttakt alle "TaktHauptschleife" ms
@@ -174,7 +180,6 @@ void tsk_main(void *param)
               gpio_bit_reset(GPIOA, GPIO_PIN_12); // Regler ein
               minimalspannung = minimalspannung_abs;
               Langzeitzaehler = 0;
-              leistung_MPP = 0;
               Schritt = 2;
               startverz = 0;
             }
@@ -189,7 +194,7 @@ void tsk_main(void *param)
         }
       case 2: // MPP finden Schritt
         // Wandlerstom kontinuirlich hoch fahren bis die Zellspannung auf die Minimalspannung sinkt oder der Strom auf den Maximalstrom steigt
-        // dabei den Punkt mit der grösten Leistung suchen und sich die Spannung dort merken = MPP Spannung
+        // dabei den Punkt mit der grösten Leistung suchen und sich die Spannung dort merken = MPP Spannung (passiert weiter oben)
         {
           gpio_bit_reset(GPIOB, GPIO_PIN_13);                                                       // rot aus
           gpio_bit_write(GPIOB, GPIO_PIN_12, (FlagStatus)!gpio_output_bit_get(GPIOB, GPIO_PIN_12)); // blau blinkt
@@ -198,7 +203,7 @@ void tsk_main(void *param)
           {
             if (f_U_out < 1023)
             {
-              f_U_out += (2.0 / flashdata.reglergeschwindigkeit);
+              f_U_out += (3.0 / flashdata.reglergeschwindigkeit);
             }
             else
             {
@@ -235,15 +240,14 @@ void tsk_main(void *param)
           {
             f_U_out = f_U_out + ((float)spannung - (float)spannung_MPP) / (Mittel_aus * 61 * flashdata.reglergeschwindigkeit * 5); // Augangsstrom regeln
           }
-          f_U_out = f_U_out < 0.0 ? 0.0 : f_U_out;
-          f_U_out = f_U_out > 1023 ? 1023 : f_U_out;
+          f_U_out = f_U_out < 0.0 ? 0.0 : f_U_out;   // Reglerausgang nach unten
+          f_U_out = f_U_out > 1023 ? 1023 : f_U_out; // und oben begrenzen
         }
         Langzeitzaehler++;
         // alle 10 min gucken ob sich die MPP Spannung durch änderung der Zellentemperatur verschoben hat
         // Wandlerstom dazu um 1/4 senken und Suche starten
         if ((Langzeitzaehler == 600000 / TaktHauptschleife) || (Langzeitzaehler == 1200000 / TaktHauptschleife))
         {
-          leistung_MPP = 0;
           f_U_out *= 0.75;
           minimalspannung = spannung_MPP - 300 * Mittel_aus; // suchen bis 5V unter aktueller MPP-Spannung
           Schritt = 2;
@@ -253,7 +257,6 @@ void tsk_main(void *param)
         // Wandlerstom dazu auf 1/8 absenken und Suche starten
         if (Langzeitzaehler == 1800000 / TaktHauptschleife)
         {
-          leistung_MPP = 0;
           Langzeitzaehler = 0;
           minimalspannung = minimalspannung_abs; // suchen bis zur Minimalspannung
           f_U_out *= 0.125;
@@ -269,7 +272,7 @@ void tsk_main(void *param)
   }
 }
 
-void tsk_com_send(void *param)
+void tsk_com_send(void *param) // Kommunikationstask zum senden
 {
   static uint32_t lastwaketime;
   while (1)
@@ -317,7 +320,7 @@ void tsk_com_send(void *param)
   }
 }
 
-void tsk_com_rcv(void *param)
+void tsk_com_rcv(void *param) // Kommunikationstask zum empfangen
 {
   static uint8_t step = 0;
   char ch[6];
@@ -461,11 +464,11 @@ void tsk_com_rcv(void *param)
   }
 }
 
-void zcd_int()
+void zcd_int() // Interrupt ausgelöst durch positiven Nulldurchgang der Netzspannung
 {
   if (Synccounter < 256)
     TIMER_CAR(TIMER13)
-  --; // Timer 1 so nachführen dass er netzsyncron läuft
+  --; // Timer 13 so nachführen dass er netzsyncron läuft
   if (Synccounter > 256)
     TIMER_CAR(TIMER13)
   ++; // müsste bei 50Hz bei 5625 sein
@@ -486,7 +489,7 @@ void zcd_int()
   Synccounter = 0;
 }
 
-void t13ov_int()
+void t13ov_int() // Interrupt alle 78us (78us * 256 = 20ms = 50Hz)
 {
   TIMER_CH0CV(TIMER15) = (sinus2[(uint8_t)Synccounter & 0b01111111] * U_out) >> 8;
   if (cnt_Haupttakt < ((1282 * TaktHauptschleife) / 100)) // alle 1282 x 78us = 100ms (72MHz/5625=78us)
