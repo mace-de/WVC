@@ -203,7 +203,7 @@ void tsk_main(void *param) // Hauppttask
           {
             if (f_U_out < 1023)
             {
-              f_U_out += (3.0 / flashdata.reglergeschwindigkeit);
+              f_U_out += (flashdata.reglergeschwindigkeit / 6.0);
             }
             else
             {
@@ -238,7 +238,7 @@ void tsk_main(void *param) // Hauppttask
           }
           else
           {
-            f_U_out = f_U_out + ((float)spannung - (float)spannung_MPP) / (Mittel_aus * 61 * flashdata.reglergeschwindigkeit * 5); // Augangsstrom regeln
+            f_U_out = f_U_out + (((float)spannung - (float)spannung_MPP) * flashdata.reglergeschwindigkeit) / (Mittel_aus * 61 * 24); // Augangsstrom regeln
           }
           f_U_out = f_U_out < 0.0 ? 0.0 : f_U_out;   // Reglerausgang nach unten
           f_U_out = f_U_out > 1023 ? 1023 : f_U_out; // und oben begrenzen
@@ -526,7 +526,7 @@ void setup()
     flashdata.mainswitch = 1;
     flashdata.kalibrirung = 50;
     flashdata.startverzoegerung = 30;
-    flashdata.reglergeschwindigkeit = 8;
+    flashdata.reglergeschwindigkeit = 6;
   }
   Serial.begin(115200);
   // I/O-Pins einstellen

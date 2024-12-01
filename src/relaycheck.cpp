@@ -1,12 +1,12 @@
 #include <Arduino.h>
 #include "myadc.h"
-#define TIMETOWAIT 1 // Minuten Wartezeit zwischen den Relaistests. Da der WR am früh evtl noch nicht genug Energie hat das Relais korrekt zu schalten
+#define TIMETOWAIT 10 // Minuten Wartezeit zwischen den Relaistests. Da der WR am früh evtl noch nicht genug Energie hat das Relais korrekt zu schalten
 void relaycheck()
 {
   boolean last_zcd = 0, last_opto = 0, zcd_temp, opto_temp;
   uint32_t zcd_millis, opto_millis, schritt = 0, repeat = 0;
   int32_t zcd_cnt = 0, opto_cnt = 0, waitcounter = 0;
-
+  delay(500);
   while (1)
   {
     zcd_temp = gpio_input_bit_get(GPIOA, GPIO_PIN_6);

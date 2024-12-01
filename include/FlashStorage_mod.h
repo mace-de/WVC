@@ -69,19 +69,19 @@ public:
             offset += _storage_size;
         } while ((cnt != _storage_size) && ((data_area_start + offset) < fmc_end_address));
         offset -= _storage_size;
-        if ((offset != 0) && ((data_area_start + offset + _storage_size) < fmc_end_address))
+        if (offset == 0) // wenn 1. Datensatz mit 0xFF gefüllt = Flash leer = invalid data -> return 0
+        {
+            return 0;
+        }
+        if ((data_area_start + offset + _storage_size) < fmc_end_address)
             offset -= _storage_size;
         src = (uint8_t *)data_area_start + offset;
         for (uint32_t i = 0; i < _storage_size; i++)
         {
             buffer_[i] = src[i];
         }
-        if (offset != 0)
-        {
-            offset += _storage_size;
-            return 1;
-        }
-        return 0;
+        offset += _storage_size;
+        return 1;
     }
 
     uint32_t length()
