@@ -12,7 +12,7 @@ void relaycheck()
     zcd_temp = gpio_input_bit_get(GPIOA, GPIO_PIN_6);
     opto_temp = gpio_input_bit_get(GPIOC, GPIO_PIN_14);
     if (adc_channel_sample(ADC_CHANNEL_7) < 1300) // wenn die PV-Spannung hier schon einbricht, dann ist zu wenig Licht
-    {                                              // zum starten. Dann warten und später nochmal versuchen (970 (61) = 1V)
+    {                                             // zum starten. Dann warten und später nochmal versuchen (970 (61) = 1V)
       schritt = 4;
     }
     if (zcd_temp != last_zcd) // ZCD Pin Flanken zählen
@@ -30,7 +30,7 @@ void relaycheck()
     case 0:
     {
       gpio_bit_set(GPIOB, GPIO_PIN_11); // Relais 115V/230V Ein
-      if (zcd_cnt > 100) // warten bis Netz vorhanden
+      if (zcd_cnt > 100)                // warten bis Netz vorhanden
       {
         schritt = 1;
         zcd_cnt = 0;
@@ -62,8 +62,8 @@ void relaycheck()
     case 3: // Ergebnis prüfen
     {
       if (abs(zcd_cnt - (2 * opto_cnt)) < 8) // es müssen etwa doppelt so viele Flanken an ZCD aufgetreten sein wie am Optokoppler
-        return;                                // wenn ja, OK
-      if (repeat < 1)                          // wenn nein, zweiter Versuch
+        return;                              // wenn ja, OK
+      if (repeat < 1)                        // wenn nein, zweiter Versuch
       {
         delay(500);
         schritt = 0;

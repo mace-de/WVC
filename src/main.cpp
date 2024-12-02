@@ -335,7 +335,7 @@ void tsk_com_rcv(void *param) // Kommunikationstask zum empfangen
         if (Serial.read() == '+') // Startzeichen suchen
         {
           step = 1;
-          vTaskDelay(1); // kurz warten damit der String auch komplett im Puffer ist
+          vTaskDelay(10); // kurz warten damit der String auch komplett im Puffer ist
         }
         break;
       }
@@ -570,9 +570,9 @@ void setup()
   //---------------------------------------------------------------------------
 
   // Tasks und Interrupt erzeugen
-  xTaskCreate(tsk_main, "task1", 70, NULL, 1, &hdl1);      // Haupttask
-  xTaskCreate(tsk_com_send, "task2", 100, NULL, 0, &hdl2); // Kommunikationstask zum senden
-  xTaskCreate(tsk_com_rcv, "task3", 70, NULL, 0, &hdl3);   // Kommunikationstask zum empfangen
+  xTaskCreate(tsk_main, "task1", 80, NULL, 1, &hdl1);      // Haupttask
+  xTaskCreate(tsk_com_send, "task2", 110, NULL, 0, &hdl2); // Kommunikationstask zum senden
+  xTaskCreate(tsk_com_rcv, "task3", 80, NULL, 0, &hdl3);   // Kommunikationstask zum empfangen
   attachInterrupt(PA6, zcd_int, RISING);                   // Zerocross Interrupt
   vTaskStartScheduler();                                   // Tasks starten
 }

@@ -73,7 +73,7 @@ public:
         {
             return 0;
         }
-        if ((data_area_start + offset + _storage_size) < fmc_end_address)
+        if ((data_area_start + offset) < fmc_end_address)
             offset -= _storage_size;
         src = (uint8_t *)data_area_start + offset;
         for (uint32_t i = 0; i < _storage_size; i++)
@@ -121,7 +121,7 @@ public:
     {
         uint32_t address = data_area_start;
         uint32_t *ptrs = (uint32_t *)buffer_;
-        if (data_area_start + offset >= fmc_end_address)
+        if (data_area_start + offset + _storage_size >= fmc_end_address)
         {
             fmc_page_erase(address);
             offset = 0;
