@@ -1,38 +1,27 @@
 #include <Arduino.h>
 #include <FreeRTOS.h>
 #include <task.h>
-#include <queue.h>
-#include <semphr.h>
 #include "GD32FreeRTOSConfig.h"
 #include <HardwareTimer.h>
 #include "FlashStorage_mod.h"
 #include "myadc.h"
-#include "lut.h"
 #include "relaycheck.h"
 #include "Temp_lut.h"
-
-#define RELAYCHECK                          // Testfunktion Netzrelais für Nutzung muss R88 mit 10k Ohm überbrückt werden
-#define Mittel_aus 16                       // gleitendens Mittel aus X Werten (Maximal 63 sonst Überlauf)
-#define Einschaltspannung 1700 * Mittel_aus // Einschaltspannung 28V
-#define Abschaltspannung 1160 * Mittel_aus  // Abschaltspannung 19V
-#define TaktHauptschleife 100               // Zykluszeit Haupttakt in ms
-
-const uint32_t minimalspannung_abs = 1576 * Mittel_aus; //= etwa 26V darunter kann der Wandler wegen zu geringer Ausgangsspannung
-                                                        // an den Scheitelpunkten nicht ins Netz einspeisen (61) = 1V
-const uint32_t maximalstrom_abs = 2200 * Mittel_aus;    //= etwa 15A darüber wird der WR wohl verglühen (148) = 1A
+#include "mycom.h"
+#include "flashdata.h"
+#include "config.h"
+#include "myint.h"
 
 volatile uint32_t U_out = 0, Synccounter = 0, abregelwert = 0, cnt_Haupttakt = 0, gu = 0, gi = 0, gun = 0, gt = 0, gumpp = 0;
 volatile bool Flag_Haupttakt = 0, Sync = 0, Flash_flag = 0;
 volatile float energie_tag = 0;
-volatile struct s_flashdata
-{
-  float energie_gesamt;
-  uint8_t mainswitch, leistungsanforderung, kalibrirung, startverzoegerung, reglergeschwindigkeit;
-} flashdata;
+volatile s_flashdata flashdata;
 
 TaskHandle_t hdl1, hdl2, hdl3;
 HardwareSerial Serial(PB7, PB6, 0);
 FlashStorage<sizeof(flashdata)> myflash;
+PWM mypwm(PB8);
+HardwareTimer mytim(TIMER13);
 
 void tsk_main(void *param) // Hauppttask
 {
@@ -198,7 +187,7 @@ void tsk_main(void *param) // Hauppttask
         {
           gpio_bit_reset(GPIOB, GPIO_PIN_13);                                                       // rot aus
           gpio_bit_write(GPIOB, GPIO_PIN_12, (FlagStatus)!gpio_output_bit_get(GPIOB, GPIO_PIN_12)); // blau blinkt
-          minimalspannung = minimalspannung < minimalspannung_abs ? minimalspannung_abs : minimalspannung;
+          minimalspannung = minimalspannung < minimalspannung_abs + (2 * 970 * flashdata.spannungsgrenze) ? minimalspannung_abs + (2 * 970 * flashdata.spannungsgrenze) : minimalspannung;
           if ((spannung > minimalspannung) && (strom < maximalstrom))
           {
             if (f_U_out < 1023)
@@ -272,247 +261,6 @@ void tsk_main(void *param) // Hauppttask
   }
 }
 
-void tsk_com_send(void *param) // Kommunikationstask zum senden
-{
-  static uint32_t lastwaketime;
-  while (1)
-  {
-    float leistung = (gu * gi) / 2678779.07;
-    energie_tag += leistung;
-    flashdata.energie_gesamt += leistung;
-    vTaskDelay(500);
-    Serial.print("AT+SENDICA=property,PV_Volt,");
-    Serial.print(gu / 970.0, 1); // ausgabe Solarspannung in V
-    Serial.print(",PV_Current,");
-    Serial.print(gi / 2375.0, 1); // Ausgabe Solarstrom in A
-    Serial.print(",PV_Power,");
-    Serial.print((gi * gu) / (2375.0 * 970.0), 1); // Ausgabe Solarleistung in W
-    Serial.print(",AC_Volt,");
-    Serial.print(gun / 3.95, 1); // Ausgabe Netzspannung
-    Serial.print(",AC_Current,");
-    Serial.print(((gu * gi) / 2678779.07) / (gun / 3.95)); // Ausgabe berechneter Ausgangsstrom in A Wirkungsgrad ~86%
-    Serial.print(",Out_Power,");
-    Serial.print(leistung, 1); // Ausgabe berechnete Ausgangsleistung
-    Serial.print(",Temperature,");
-    Serial.print(gt / 100.0, 1); // Ausgabe gemessene Temperatur auf Platine
-    Serial.print(",Power_adjustment,");
-    Serial.print(flashdata.leistungsanforderung); // Ausgabe aktuelle Leistungsanforderung
-    Serial.print(",Energy,");
-    Serial.println(flashdata.energie_gesamt / 654545.4, 2); // Ausgabe Gesamtenergiemenge
-    Serial.println();
-    vTaskDelay(500);
-    Serial.print("AT+SENDICA=property,PowerSwitch,");
-    Serial.print(flashdata.mainswitch); // Ausgabe aktueller Ein/Aus Status
-    Serial.print(",Day_Energy,");
-    Serial.print(energie_tag / 654545.4, 2); // Ausgabe berechnete Energie seit einschalten
-    Serial.print(",Plant,");
-    Serial.print(U_out / 10.0, 1); // Ausgabe MPP-Regler Ausgang in % oder TIMER_CAR(TIMER13) / 112.5, 2); // Ausgabe gemessene Netzfrequenz
-    Serial.print(",Emission,");
-    Serial.print(gumpp / 970.0, 2); // Ausgabe MPP-Spannung im CO2 Datenfeld
-    Serial.print(",Time,");
-    Serial.print(flashdata.startverzoegerung); // Ausgabe Zeit Startverzögerung
-    Serial.print(",P_adj,");
-    Serial.print(flashdata.kalibrirung); // Ausgabe aktueller Kalibrierungswert
-    Serial.print(",TEMP_SET,");
-    Serial.println(70);
-    Serial.println();
-    xTaskDelayUntil(&lastwaketime, 5500);
-  }
-}
-
-void tsk_com_rcv(void *param) // Kommunikationstask zum empfangen
-{
-  static uint8_t step = 0;
-  char ch[6];
-  while (1)
-  {
-    if (Serial.available()) // sind Daten im Puffer?
-    {
-      switch (step)
-      {
-      case 0:
-      {
-        if (Serial.read() == '+') // Startzeichen suchen
-        {
-          step = 1;
-          vTaskDelay(10); // kurz warten damit der String auch komplett im Puffer ist
-        }
-        break;
-      }
-      case 1:
-      {
-        if (Serial.read() == 'I') // ILOPDATA?
-          step = 2;               // dann zur Auswertung
-        else
-          step = 0; // sonst wieder zur Startzeichen Suche
-        break;
-      }
-      case 2:
-      {
-        ch[0] = Serial.read();
-        if (ch[0] == ',') // erstes Komma finden
-        {
-          ch[0] = Serial.read();
-          ch[1] = Serial.read();
-          if (ch[0] == 'E' && ch[1] == 'n') //+ILOPDATA=ICA,Energy_Cleared,0<\r><\n>
-            step = 3;                       //              ^^
-          if (ch[0] == 'P')                 //+ILOPDATA=ICA,PowerSwitch,0<\r><\n>
-          {                                 //              ^
-            for (int i = 2; i < 6; i++)
-            {
-              ch[i] = Serial.read();
-            }
-            if (ch[5] == 'S') //+ILOPDATA=ICA,PowerSwitch,0<\r><\n>
-              step = 4;       //                   ^
-            if (ch[5] == '_') //+ILOPDATA=ICA,Power_adjust,100<\r><\n>
-              step = 8;       //                   ^
-          }
-          if (ch[0] == 'T' && ch[1] == 'i') //+ILOPDATA=ICA,Time,40<\r><\n>
-            step = 5;                       //              ^^
-          if (ch[0] == 'C' && ch[1] == 'h') //+ILOPDATA=ICA,Channel,1<\r><\n>
-            step = 6;                       //              ^^
-          if (ch[0] == 'M' && ch[1] == 'o') //+ILOPDATA=ICA,Model,4<\r><\n>
-            step = 7;                       //              ^^
-          if (ch[0] == 'P' && ch[1] == '_') //+ILOPDATA=ICA,P_adj,70<\r><\n>
-            step = 9;                       //              ^^
-        }
-        break;
-      }
-      case 3: // Gesamtenergie Rücksetzen
-      {
-        if (Serial.read() == ',')
-        {
-          ch[0] = Serial.read();
-          if (ch[0] == '1')
-            flashdata.energie_gesamt = 0.0;
-          Flash_flag = true;
-          step = 0;
-        }
-        break;
-      }
-      case 4: // Powerswitch
-      {
-        if (Serial.read() == ',')
-        {
-          ch[0] = Serial.read();
-          if (ch[0] == '0')
-            flashdata.mainswitch = 0;
-          if (ch[0] == '1')
-            flashdata.mainswitch = 1;
-          Flash_flag = true;
-          step = 0;
-        }
-        break;
-      }
-      case 5: // Startverzögerung
-      {
-        if (Serial.read() == ',')
-        {
-          flashdata.startverzoegerung = Serial.parseInt();
-          Flash_flag = true;
-          step = 0;
-        }
-        break;
-      }
-      case 7: // Reglergeschwindigkeit
-      {
-        if (Serial.read() == ',')
-        {
-          flashdata.reglergeschwindigkeit = Serial.parseInt() + 1;
-          Flash_flag = true;
-          step = 0;
-        }
-        break;
-      }
-      case 8: // Leistungsbegrenzung
-      {
-        if (Serial.read() == ',')
-        {
-          flashdata.leistungsanforderung = Serial.parseInt();
-          Flash_flag = true;
-          step = 0;
-        }
-        break;
-      }
-      case 9: // ADC Kalibrierung
-      {
-        if (Serial.read() == ',')
-        {
-          flashdata.kalibrirung = Serial.parseInt();
-          Flash_flag = true;
-          step = 0;
-        }
-        break;
-      }
-      default:
-      {
-        step = 0;
-        break;
-      }
-      }
-    }
-    else
-    {
-      if (Flash_flag)
-      {
-        myflash.write(0, (uint8_t *)&flashdata, sizeof(flashdata));
-        myflash.commit();
-        Flash_flag = false;
-      }
-      vTaskDelay(100); // wenn keine Daten im Puffer 100ms warten
-    }
-  }
-}
-
-void zcd_int() // Interrupt ausgelöst durch positiven Nulldurchgang der Netzspannung
-{
-  if (Synccounter < 256)
-    TIMER_CAR(TIMER13)
-  --; // Timer 13 so nachführen dass er netzsyncron läuft
-  if (Synccounter > 256)
-    TIMER_CAR(TIMER13)
-  ++; // müsste bei 50Hz bei 5625 sein
-  if (Synccounter == 256)
-  {
-    Sync = 1;
-  }
-  if ((TIMER_CAR(TIMER13) < 5400) || (TIMER_CAR(TIMER13) > 5737)) // Netzfrequenz überwachen Grenze 52,08Hz und 49,02Hz
-  {
-    Sync = 0;
-    gpio_bit_reset(GPIOC, GPIO_PIN_13); // Netzrelais aus
-    gpio_bit_set(GPIOA, GPIO_PIN_12);   // Regler aus
-  }
-  if ((TIMER_CAR(TIMER13) >= 5400) && (TIMER_CAR(TIMER13) <= 5620))
-  {
-    abregelwert = 5625 - TIMER_CAR(TIMER13); // Zwischen 50 und 52Hz Leistung abregeln
-  }
-  Synccounter = 0;
-}
-
-void t13ov_int() // Interrupt alle 78us (78us * 256 = 20ms = 50Hz)
-{
-  TIMER_CH0CV(TIMER15) = (sinus2[(uint8_t)Synccounter & 0b01111111] * U_out) >> 8;
-  if (cnt_Haupttakt < ((1282 * TaktHauptschleife) / 100)) // alle 1282 x 78us = 100ms (72MHz/5625=78us)
-  {
-    cnt_Haupttakt++;
-  }
-  else
-  {
-    cnt_Haupttakt = 0; // das Flag für die Hauptschleife setzen
-    Flag_Haupttakt = true;
-  }
-  Synccounter++;
-  if (Synccounter > 258) // wenn Synccounter überläuft = kein Zerocross = kein Netz
-  {
-    Synccounter--;
-    Sync = 0;
-    gpio_bit_reset(GPIOC, GPIO_PIN_13); // Netzrelais aus
-    gpio_bit_set(GPIOA, GPIO_PIN_12);   // Regler aus
-  }
-}
-
-PWM mypwm(PB8);
-HardwareTimer mytim(TIMER13);
 void setup()
 {
   if (myflash.begin())
@@ -527,6 +275,7 @@ void setup()
     flashdata.kalibrirung = 50;
     flashdata.startverzoegerung = 30;
     flashdata.reglergeschwindigkeit = 6;
+    flashdata.spannungsgrenze = 0;
   }
   Serial.begin(115200);
   // I/O-Pins einstellen
