@@ -1,4 +1,4 @@
-#include"mycom.h"
+#include "mycom.h"
 
 void tsk_com_send(void *param) // Kommunikationstask zum senden
 {
@@ -42,7 +42,7 @@ void tsk_com_send(void *param) // Kommunikationstask zum senden
     Serial.print(",P_adj,");
     Serial.print(flashdata.kalibrirung); // Ausgabe aktueller Kalibrierungswert
     Serial.print(",Model,");
-    Serial.print(flashdata.reglergeschwindigkeit-1); // Ausgabe Zeit Startverzögerung
+    Serial.print(flashdata.reglergeschwindigkeit - 1); // Ausgabe Zeit Startverzögerung
     Serial.print(",Chanel,");
     Serial.print(flashdata.spannungsgrenze); // Ausgabe aktueller Kalibrierungswert
     Serial.print(",TEMP_SET,");
@@ -74,7 +74,13 @@ void tsk_com_rcv(void *param) // Kommunikationstask zum empfangen
       case 1:
       {
         if (Serial.read() == 'I') // ILOPDATA?
-          step = 2;               // dann zur Auswertung
+        {
+          Serial.readBytes(ch, 6);
+          if (ch[3] == 'D' && ch[4] == 'A' && ch[5] == 'T')
+            step = 2; // dann zur Auswertung
+          else
+            step = 0; // sonst wieder zur Startzeichen Suche
+        }
         else
           step = 0; // sonst wieder zur Startzeichen Suche
         break;
@@ -205,4 +211,3 @@ void tsk_com_rcv(void *param) // Kommunikationstask zum empfangen
     }
   }
 }
-
