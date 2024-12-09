@@ -41,6 +41,10 @@ void tsk_com_send(void *param) // Kommunikationstask zum senden
     Serial.print(flashdata.startverzoegerung); // Ausgabe Zeit Startverzögerung
     Serial.print(",P_adj,");
     Serial.print(flashdata.kalibrirung); // Ausgabe aktueller Kalibrierungswert
+    Serial.print(",Model,");
+    Serial.print(flashdata.reglergeschwindigkeit-1); // Ausgabe Zeit Startverzögerung
+    Serial.print(",Chanel,");
+    Serial.print(flashdata.spannungsgrenze); // Ausgabe aktueller Kalibrierungswert
     Serial.print(",TEMP_SET,");
     Serial.println(70);
     Serial.println();
